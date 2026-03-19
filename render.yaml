@@ -4,5 +4,8 @@ services:
     env: node
     rootDir: api
     plan: starter
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
     buildCommand: npm install && npm run build
     startCommand: npm run start
