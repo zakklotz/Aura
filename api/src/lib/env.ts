@@ -27,7 +27,6 @@ export const env = {
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY?.trim() ?? "",
   r2Bucket: process.env.R2_BUCKET?.trim() ?? "",
   r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL?.trim() ?? "",
-  require,
 };
 
 export function requireApiBaseUrl(): string {
