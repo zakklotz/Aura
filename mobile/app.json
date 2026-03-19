@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "Aura",
+    "slug": "aura-softphone",
+    "scheme": "aura",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.aura.softphone",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "voip",
+          "remote-notification"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.aura.softphone"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-notifications"
+    ]
+  }
+}

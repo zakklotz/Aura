@@ -1,0 +1,24 @@
+{
+  "name": "aura-softphone-core",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "api",
+    "mobile"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace api",
+    "dev:mobile": "npm run start --workspace mobile",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:api": "npm run test --workspace api",
+    "test:mobile": "npm run test --workspace mobile",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace api",
+    "db:migrate": "npm run db:migrate --workspace api",
+    "db:deploy": "npm run db:deploy --workspace api"
+  }
+}

@@ -1,0 +1,608 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BusinessOnboardingState {
+  NEEDS_BUSINESS_PROFILE
+  NEEDS_PHONE_NUMBER
+  NEEDS_GREETING
+  COMPLETE
+}
+
+enum MembershipRole {
+  OWNER
+  STAFF
+}
+
+enum PhoneNumberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ContactImportSource {
+  CSV
+  PHONEBOOK
+}
+
+enum ContactImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ThreadItemType {
+  SMS_INBOUND
+  SMS_OUTBOUND
+  MISSED_CALL
+  VOICEMAIL
+  CALL_COMPLETED
+  CALL_DECLINED
+  SYSTEM_NOTE
+}
+
+enum UnreadState {
+  UNREAD
+  READ
+  HEARD
+}
+
+enum PayloadRefType {
+  MESSAGE
+  CALL_EVENT
+  VOICEMAIL
+  SYSTEM_NOTE
+}
+
+enum ThreadParticipantKind {
+  BUSINESS_NUMBER
+  EXTERNAL
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageDeliveryStatus {
+  PENDING
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallEventType {
+  MISSED_CALL
+  CALL_COMPLETED
+  CALL_DECLINED
+}
+
+enum CallSessionState {
+  INCOMING
+  ANSWERING
+  OUTGOING_DIALING
+  CONNECTING
+  ACTIVE
+  ENDED
+  FAILED
+}
+
+enum CallSessionSource {
+  API
+  SDK
+  WEBHOOK
+}
+
+enum VoicemailTranscriptionStatus {
+  NOT_REQUESTED
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum GreetingMode {
+  TTS
+  RECORDED
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+}
+
+enum VoiceRegistrationState {
+  READY
+  DEGRADED
+  REGISTERING
+}
+
+enum ProviderType {
+  TWILIO
+}
+
+enum ProviderEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+}
+
+enum NormalizedErrorCode {
+  VOICE_TOKEN_ERROR
+  VOICE_REGISTRATION_ERROR
+  CALL_CONNECT_ERROR
+  SMS_SEND_ERROR
+  RECORDING_ERROR
+  TRANSCRIPTION_ERROR
+}
+
+enum IdempotencyOperation {
+  SEND_SMS
+  MARK_VOICEMAIL_HEARD
+  ACTIVATE_GREETING
+  CONTACT_IMPORT
+}
+
+enum ContactSource {
+  MANUAL
+  CSV
+  PHONEBOOK
+}
+
+model User {
+  id                  String               @id
+  email               String?              @unique
+  firstName           String?              @map("first_name")
+  lastName            String?              @map("last_name")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  memberships         BusinessMembership[]
+  preferences         UserPreference?
+  deviceRegistrations DeviceRegistration[]
+  notificationStates  NotificationState[]
+  idempotencyKeys     IdempotencyKey[]
+  contactImportJobs   ContactImportJob[]
+
+  @@map("users")
+}
+
+model Business {
+  id                  String                  @id @default(cuid())
+  displayName         String?                 @map("display_name")
+  onboardingState     BusinessOnboardingState @default(NEEDS_BUSINESS_PROFILE) @map("onboarding_state")
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
+  memberships         BusinessMembership[]
+  phoneNumbers        PhoneNumber[]
+  contacts            Contact[]
+  contactPhoneNumbers ContactPhoneNumber[]
+  contactImportJobs   ContactImportJob[]
+  threads             Thread[]
+  threadItems         ThreadItem[]
+  messages            Message[]
+  callEvents          CallEvent[]
+  callSessions        CallSession[]
+  voicemails          Voicemail[]
+  voicemailGreetings  VoicemailGreeting[]
+  deviceRegistrations DeviceRegistration[]
+  notificationStates  NotificationState[]
+  providerEvents      ProviderEvent[]
+  idempotencyKeys     IdempotencyKey[]
+
+  @@index([onboardingState], map: "businesses_onboarding_state_idx")
+  @@map("businesses")
+}
+
+model BusinessMembership {
+  id         String         @id @default(cuid())
+  businessId String         @map("business_id")
+  userId     String         @map("user_id")
+  role       MembershipRole @default(OWNER)
+  createdAt  DateTime       @default(now()) @map("created_at")
+  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId], map: "business_memberships_business_user_key")
+  @@index([userId], map: "business_memberships_user_id_idx")
+  @@map("business_memberships")
+}
+
+model UserPreference {
+  id               String   @id @default(cuid())
+  userId           String   @unique @map("user_id")
+  activeBusinessId String?  @map("active_business_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([activeBusinessId], map: "user_preferences_active_business_id_idx")
+  @@map("user_preferences")
+}
+
+model PhoneNumber {
+  id                 String              @id @default(cuid())
+  businessId         String              @map("business_id")
+  e164               String
+  label              String?
+  twilioSid          String?             @unique @map("twilio_sid")
+  isPrimary          Boolean             @default(false) @map("is_primary")
+  smsEnabled         Boolean             @default(true) @map("sms_enabled")
+  voiceEnabled       Boolean             @default(true) @map("voice_enabled")
+  status             PhoneNumberStatus   @default(ACTIVE)
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+  business           Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  threads            Thread[]
+  threadItems        ThreadItem[]
+  messages           Message[]
+  callEvents         CallEvent[]
+  callSessions       CallSession[]
+  voicemails         Voicemail[]
+  voicemailGreetings VoicemailGreeting[]
+
+  @@unique([businessId, e164], map: "phone_numbers_business_e164_key")
+  @@index([businessId, isPrimary], map: "phone_numbers_business_primary_idx")
+  @@map("phone_numbers")
+}
+
+model Contact {
+  id                 String               @id @default(cuid())
+  businessId         String               @map("business_id")
+  displayName        String               @map("display_name")
+  notes              String?
+  isManuallyEdited   Boolean              @default(true) @map("is_manually_edited")
+  source             ContactSource        @default(MANUAL)
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+  business           Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumbers       ContactPhoneNumber[]
+  threads            Thread[]
+  threadItems        ThreadItem[]
+  participants       ThreadParticipant[]
+
+  @@index([businessId, displayName], map: "contacts_business_display_name_idx")
+  @@map("contacts")
+}
+
+model ContactPhoneNumber {
+  id               String        @id @default(cuid())
+  businessId       String        @map("business_id")
+  contactId        String        @map("contact_id")
+  e164             String
+  label            String?
+  isPrimary        Boolean       @default(false) @map("is_primary")
+  source           ContactSource @default(MANUAL)
+  manuallyEditedAt DateTime?     @map("manually_edited_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+  business         Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  contact          Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, e164], map: "contact_phone_numbers_business_e164_key")
+  @@index([contactId], map: "contact_phone_numbers_contact_id_idx")
+  @@map("contact_phone_numbers")
+}
+
+model ContactImportJob {
+  id             String              @id @default(cuid())
+  businessId     String              @map("business_id")
+  actorUserId    String              @map("actor_user_id")
+  source         ContactImportSource
+  status         ContactImportStatus @default(PENDING)
+  idempotencyKey String?             @map("idempotency_key")
+  totalRows      Int                 @default(0) @map("total_rows")
+  createdCount   Int                 @default(0) @map("created_count")
+  mergedCount    Int                 @default(0) @map("merged_count")
+  skippedCount   Int                 @default(0) @map("skipped_count")
+  errorCount     Int                 @default(0) @map("error_count")
+  failureReason  String?             @map("failure_reason")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+  completedAt    DateTime?           @map("completed_at")
+  business       Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  actorUser      User                @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, createdAt], map: "contact_import_jobs_business_created_at_idx")
+  @@index([businessId, idempotencyKey], map: "contact_import_jobs_business_idempotency_key_idx")
+  @@map("contact_import_jobs")
+}
+
+model Thread {
+  id                      String              @id @default(cuid())
+  businessId              String              @map("business_id")
+  phoneNumberId           String              @map("phone_number_id")
+  externalParticipantE164 String              @map("external_participant_e164")
+  contactId               String?             @map("contact_id")
+  lastOccurredAt          DateTime            @default(now()) @map("last_occurred_at")
+  lastThreadItemId        String?             @map("last_thread_item_id")
+  lastPreview             String?             @map("last_preview")
+  unreadSmsCount          Int                 @default(0) @map("unread_sms_count")
+  unreadMissedCallCount   Int                 @default(0) @map("unread_missed_call_count")
+  unheardVoicemailCount   Int                 @default(0) @map("unheard_voicemail_count")
+  totalUnreadCount        Int                 @default(0) @map("total_unread_count")
+  createdAt               DateTime            @default(now()) @map("created_at")
+  updatedAt               DateTime            @updatedAt @map("updated_at")
+  business                Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber             PhoneNumber         @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  contact                 Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  participants            ThreadParticipant[]
+  items                   ThreadItem[]
+  messages                Message[]
+  callEvents              CallEvent[]
+  voicemails              Voicemail[]
+
+  @@unique([businessId, phoneNumberId, externalParticipantE164], map: "threads_business_number_external_key")
+  @@index([businessId, lastOccurredAt(sort: Desc)], map: "threads_business_last_occurred_at_idx")
+  @@index([phoneNumberId], map: "threads_phone_number_id_idx")
+  @@map("threads")
+}
+
+model ThreadParticipant {
+  id                      String                @id @default(cuid())
+  threadId                String                @map("thread_id")
+  kind                    ThreadParticipantKind
+  phoneNumberId           String?               @map("phone_number_id")
+  externalParticipantE164 String?               @map("external_participant_e164")
+  contactId               String?               @map("contact_id")
+  createdAt               DateTime              @default(now()) @map("created_at")
+  thread                  Thread                @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  contact                 Contact?              @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([threadId, kind], map: "thread_participants_thread_kind_key")
+  @@index([phoneNumberId], map: "thread_participants_phone_number_id_idx")
+  @@map("thread_participants")
+}
+
+model ThreadItem {
+  id             String         @id @default(cuid())
+  threadId       String         @map("thread_id")
+  businessId     String         @map("business_id")
+  phoneNumberId  String         @map("phone_number_id")
+  contactId      String?        @map("contact_id")
+  itemType       ThreadItemType @map("item_type")
+  occurredAt     DateTime       @map("occurred_at")
+  unreadState    UnreadState    @default(UNREAD) @map("unread_state")
+  payloadRefType PayloadRefType @map("payload_ref_type")
+  payloadRefId   String         @map("payload_ref_id")
+  dedupeKey      String         @map("dedupe_key")
+  previewText    String?        @map("preview_text")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  thread         Thread         @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber    PhoneNumber    @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  contact        Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([businessId, dedupeKey], map: "thread_items_business_dedupe_key")
+  @@index([threadId, occurredAt(sort: Desc), id(sort: Desc)], map: "thread_items_thread_occurred_at_idx")
+  @@index([businessId, itemType, occurredAt(sort: Desc)], map: "thread_items_business_item_type_occurred_at_idx")
+  @@index([threadId, itemType, unreadState], map: "thread_items_thread_item_type_unread_state_idx")
+  @@map("thread_items")
+}
+
+model Message {
+  id                      String                @id @default(cuid())
+  businessId              String                @map("business_id")
+  phoneNumberId           String                @map("phone_number_id")
+  threadId                String                @map("thread_id")
+  externalParticipantE164 String                @map("external_participant_e164")
+  direction               MessageDirection
+  messageSid              String?               @unique @map("message_sid")
+  body                    String
+  mediaUrls               String[]              @default([]) @map("media_urls")
+  deliveryStatus          MessageDeliveryStatus @default(PENDING) @map("delivery_status")
+  errorCode               NormalizedErrorCode?  @map("error_code")
+  providerStatus          String?               @map("provider_status")
+  clientTempId            String?               @map("client_temp_id")
+  createdAt               DateTime              @default(now()) @map("created_at")
+  updatedAt               DateTime              @updatedAt @map("updated_at")
+  business                Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber             PhoneNumber           @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  thread                  Thread                @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt(sort: Desc)], map: "messages_thread_created_at_idx")
+  @@map("messages")
+}
+
+model CallEvent {
+  id                      String               @id @default(cuid())
+  businessId              String               @map("business_id")
+  phoneNumberId           String               @map("phone_number_id")
+  threadId                String               @map("thread_id")
+  externalParticipantE164 String               @map("external_participant_e164")
+  eventType               CallEventType        @map("event_type")
+  direction               CallDirection
+  callSid                 String               @map("call_sid")
+  parentCallSid           String?              @map("parent_call_sid")
+  childCallSid            String?              @map("child_call_sid")
+  providerStatus          String?              @map("provider_status")
+  startedAt               DateTime?            @map("started_at")
+  answeredAt              DateTime?            @map("answered_at")
+  endedAt                 DateTime?            @map("ended_at")
+  durationSeconds         Int?                 @map("duration_seconds")
+  errorCode               NormalizedErrorCode? @map("error_code")
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @updatedAt @map("updated_at")
+  business                Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber             PhoneNumber          @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  thread                  Thread               @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, callSid, eventType], map: "call_events_business_call_sid_event_type_key")
+  @@index([threadId, createdAt(sort: Desc)], map: "call_events_thread_created_at_idx")
+  @@index([callSid], map: "call_events_call_sid_idx")
+  @@map("call_events")
+}
+
+model CallSession {
+  id                      String               @id @default(cuid())
+  businessId              String               @map("business_id")
+  phoneNumberId           String?              @map("phone_number_id")
+  callSid                 String?              @unique @map("call_sid")
+  parentCallSid           String?              @map("parent_call_sid")
+  childCallSid            String?              @map("child_call_sid")
+  direction               CallDirection?
+  state                   CallSessionState
+  source                  CallSessionSource
+  externalParticipantE164 String?              @map("external_participant_e164")
+  lastActorUserId         String?              @map("last_actor_user_id")
+  lastActorDeviceId       String?              @map("last_actor_device_id")
+  lastTransitionAt        DateTime             @map("last_transition_at")
+  startedAt               DateTime?            @map("started_at")
+  answeredAt              DateTime?            @map("answered_at")
+  endedAt                 DateTime?            @map("ended_at")
+  retainUntil             DateTime?            @map("retain_until")
+  errorCode               NormalizedErrorCode? @map("error_code")
+  errorMessage            String?              @map("error_message")
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @updatedAt @map("updated_at")
+  business                Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber             PhoneNumber?         @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, updatedAt(sort: Desc)], map: "call_sessions_business_updated_at_idx")
+  @@index([businessId, state, updatedAt(sort: Desc)], map: "call_sessions_business_state_updated_at_idx")
+  @@index([lastActorDeviceId, updatedAt(sort: Desc)], map: "call_sessions_actor_device_updated_at_idx")
+  @@index([retainUntil], map: "call_sessions_retain_until_idx")
+  @@map("call_sessions")
+}
+
+model Voicemail {
+  id                      String                       @id @default(cuid())
+  businessId              String                       @map("business_id")
+  phoneNumberId           String                       @map("phone_number_id")
+  threadId                String                       @map("thread_id")
+  externalParticipantE164 String                       @map("external_participant_e164")
+  callSid                 String                       @map("call_sid")
+  recordingSid            String?                      @unique @map("recording_sid")
+  recordingUrl            String                       @map("recording_url")
+  durationSeconds         Int?                         @map("duration_seconds")
+  transcriptStatus        VoicemailTranscriptionStatus @default(NOT_REQUESTED) @map("transcript_status")
+  transcriptText          String?                      @map("transcript_text")
+  transcriptionProviderId String?                      @unique @map("transcription_provider_id")
+  createdAt               DateTime                     @default(now()) @map("created_at")
+  updatedAt               DateTime                     @updatedAt @map("updated_at")
+  business                Business                     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber             PhoneNumber                  @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  thread                  Thread                       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, callSid], map: "voicemails_business_call_sid_key")
+  @@index([threadId, createdAt(sort: Desc)], map: "voicemails_thread_created_at_idx")
+  @@index([transcriptStatus], map: "voicemails_transcript_status_idx")
+  @@map("voicemails")
+}
+
+model VoicemailGreeting {
+  id              String       @id @default(cuid())
+  businessId      String       @map("business_id")
+  phoneNumberId   String       @map("phone_number_id")
+  mode            GreetingMode
+  label           String?
+  ttsText         String?      @map("tts_text")
+  audioStorageKey String?      @map("audio_storage_key")
+  audioUrl        String?      @map("audio_url")
+  isActive        Boolean      @default(false) @map("is_active")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  business        Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  phoneNumber     PhoneNumber  @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+
+  @@index([phoneNumberId, isActive], map: "voicemail_greetings_phone_number_is_active_idx")
+  @@map("voicemail_greetings")
+}
+
+model DeviceRegistration {
+  id                           String                 @id @default(cuid())
+  businessId                   String                 @map("business_id")
+  userId                       String                 @map("user_id")
+  deviceId                     String                 @map("device_id")
+  platform                     DevicePlatform
+  appBuild                     String?                @map("app_build")
+  appRuntimeVersion            String?                @map("app_runtime_version")
+  expoPushToken                String?                @map("expo_push_token")
+  voicePushToken               String?                @map("voice_push_token")
+  twilioIdentity               String?                @map("twilio_identity")
+  voiceRegistrationState       VoiceRegistrationState @default(REGISTERING) @map("voice_registration_state")
+  lastRegisteredAt             DateTime?              @map("last_registered_at")
+  lastRegistrationErrorCode    NormalizedErrorCode?   @map("last_registration_error_code")
+  lastRegistrationErrorMessage String?                @map("last_registration_error_message")
+  createdAt                    DateTime               @default(now()) @map("created_at")
+  updatedAt                    DateTime               @updatedAt @map("updated_at")
+  business                     Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user                         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId, deviceId], map: "device_registrations_business_user_device_key")
+  @@index([voiceRegistrationState], map: "device_registrations_voice_registration_state_idx")
+  @@map("device_registrations")
+}
+
+model NotificationState {
+  id                     String                 @id @default(cuid())
+  businessId             String                 @map("business_id")
+  userId                 String                 @map("user_id")
+  unreadSmsCount         Int                    @default(0) @map("unread_sms_count")
+  unreadMissedCallCount  Int                    @default(0) @map("unread_missed_call_count")
+  unheardVoicemailCount  Int                    @default(0) @map("unheard_voicemail_count")
+  totalUnreadCount       Int                    @default(0) @map("total_unread_count")
+  voiceRegistrationState VoiceRegistrationState @default(REGISTERING) @map("voice_registration_state")
+  createdAt              DateTime               @default(now()) @map("created_at")
+  updatedAt              DateTime               @updatedAt @map("updated_at")
+  business               Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId], map: "notification_states_business_user_key")
+  @@map("notification_states")
+}
+
+model ProviderEvent {
+  id                      String               @id @default(cuid())
+  businessId              String?              @map("business_id")
+  provider                ProviderType         @default(TWILIO)
+  eventType               String               @map("event_type")
+  dedupeKey               String               @map("dedupe_key")
+  callSid                 String?              @map("call_sid")
+  messageSid              String?              @map("message_sid")
+  recordingSid            String?              @map("recording_sid")
+  transcriptionProviderId String?              @map("transcription_provider_id")
+  status                  ProviderEventStatus  @default(RECEIVED)
+  errorCode               NormalizedErrorCode? @map("error_code")
+  errorMessage            String?              @map("error_message")
+  rawPayload              Json                 @map("raw_payload")
+  receivedAt              DateTime             @default(now()) @map("received_at")
+  processedAt             DateTime?            @map("processed_at")
+  business                Business?            @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, dedupeKey], map: "provider_events_provider_dedupe_key")
+  @@index([callSid], map: "provider_events_call_sid_idx")
+  @@index([messageSid], map: "provider_events_message_sid_idx")
+  @@index([recordingSid], map: "provider_events_recording_sid_idx")
+  @@index([transcriptionProviderId], map: "provider_events_transcription_provider_id_idx")
+  @@map("provider_events")
+}
+
+model IdempotencyKey {
+  id             String               @id @default(cuid())
+  businessId     String               @map("business_id")
+  actorUserId    String               @map("actor_user_id")
+  operation      IdempotencyOperation
+  key            String
+  requestHash    String               @map("request_hash")
+  responseStatus Int                  @map("response_status")
+  responseBody   Json                 @map("response_body")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  business       Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  actorUser      User                 @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, actorUserId, operation, key], map: "idempotency_keys_business_actor_operation_key")
+  @@index([createdAt], map: "idempotency_keys_created_at_idx")
+  @@map("idempotency_keys")
+}
