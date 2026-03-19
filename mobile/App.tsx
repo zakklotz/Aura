@@ -1,7 +1,8 @@
 import React from "react";
 import { Text, View } from "react-native";
-import { ClerkProvider, useAuth } from "@clerk/clerk-expo";
-import * as SecureStore from "expo-secure-store";
+import { ClerkProvider, useAuth } from "@clerk/expo";
+import { tokenCache } from "@clerk/expo/token-cache";
+import * as WebBrowser from "expo-web-browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { NavigationContainer } from "@react-navigation/native";
@@ -17,14 +18,7 @@ import { colors } from "./src/theme/colors";
 const clerkPublishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
 const queryClient = new QueryClient();
 
-const tokenCache = {
-  async getToken(key: string) {
-    return SecureStore.getItemAsync(key);
-  },
-  async saveToken(key: string, token: string) {
-    await SecureStore.setItemAsync(key, token);
-  },
-};
+WebBrowser.maybeCompleteAuthSession();
 
 function MissingConfig() {
   return (

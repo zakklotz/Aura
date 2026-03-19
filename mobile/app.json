@@ -20,11 +20,24 @@
       }
     },
     "android": {
-      "package": "com.aura.softphone"
+      "package": "com.aura.softphone",
+      "googleServicesFile": "./google-services.json"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "70b67a03-4315-4efb-94b0-f868dee41ef7"
+      }
     },
     "plugins": [
+      "@clerk/expo",
+      "./plugins/withTwilioVoiceAndroid",
+      "expo-dev-client",
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-audio",
+      "expo-web-browser",
+      "expo-font",
+      "expo-asset"
     ]
   }
 }

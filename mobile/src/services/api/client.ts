@@ -1,4 +1,4 @@
-import { getClerkInstance } from "@clerk/clerk-expo";
+import { getClerkInstance } from "@clerk/expo";
 import { getOrCreateDeviceId } from "../device/deviceIdentity";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
