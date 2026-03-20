@@ -18,6 +18,7 @@ import { useCallStore } from "../store/callStore";
 import { colors } from "../theme/colors";
 import { formatTimestamp } from "../lib/formatters";
 import { BrandedEmptyState } from "../components/BrandedEmptyState";
+import { ApiError } from "../services/api/client";
 
 const heroImage = require("../../assets/approved-original-1024.png");
 
@@ -95,6 +96,14 @@ export function SettingsScreen() {
   }
 
   const data = settingsQuery.data;
+  const settingsErrorMessage =
+    settingsQuery.error instanceof ApiError || settingsQuery.error instanceof Error
+      ? settingsQuery.error.message
+      : null;
+  const historySyncErrorMessage =
+    historySyncQuery.error instanceof ApiError || historySyncQuery.error instanceof Error
+      ? historySyncQuery.error.message
+      : null;
 
   return (
     <ScrollView
@@ -125,6 +134,17 @@ export function SettingsScreen() {
         <BrandedEmptyState
           title="Loading settings"
           description="We&apos;re pulling your communication settings and business summary."
+        />
+      ) : null}
+
+      {!settingsQuery.isLoading && !data && settingsErrorMessage ? (
+        <BrandedEmptyState
+          title="Settings could not load"
+          description={settingsErrorMessage}
+          actionLabel="Try again"
+          onActionPress={() => {
+            void Promise.all([settingsQuery.refetch(), historySyncQuery.refetch()]);
+          }}
         />
       ) : null}
 
@@ -255,6 +275,7 @@ export function SettingsScreen() {
             {historySyncQuery.data?.errorMessage ? (
               <Text style={styles.statusError}>{historySyncQuery.data.errorMessage}</Text>
             ) : null}
+            {historySyncErrorMessage ? <Text style={styles.statusError}>{historySyncErrorMessage}</Text> : null}
             {data.featureReadiness.historySyncUnavailableReason ? (
               <Text style={styles.statusError}>{data.featureReadiness.historySyncUnavailableReason}</Text>
             ) : null}
