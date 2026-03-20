@@ -71,9 +71,13 @@ export function createApp() {
 
 export function startServer() {
   const { app, httpServer } = createApp();
-  httpServer.listen(env.port, () => {
+  httpServer.on("error", (error) => {
     // eslint-disable-next-line no-console
-    console.log(`Aura API listening on ${env.port}`);
+    console.error("Aura API failed to start", error);
+  });
+  httpServer.listen(env.port, "0.0.0.0", () => {
+    // eslint-disable-next-line no-console
+    console.log(`Aura API listening on 0.0.0.0:${env.port}`);
   });
   return { app, httpServer };
 }
