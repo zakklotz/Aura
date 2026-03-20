@@ -38,15 +38,16 @@ export function createApp() {
   setIo(io);
 
   app.set("io", io);
+  // Keep Render's health check independent from auth, DB-backed viewers, and provider setup.
+  app.get("/health", (_req, res) => {
+    res.status(200).json({ ok: true });
+  });
+
   app.use(cors({ origin: true, credentials: true }));
   app.use(helmet());
   app.use(express.json({ limit: "5mb" }));
   app.use(express.urlencoded({ extended: true }));
   app.use(clerkExpressMiddleware);
-
-  app.get("/health", (_req, res) => {
-    res.json({ ok: true });
-  });
 
   app.use("/api/auth", authRouter);
   app.use("/api/threads", threadsRouter);
