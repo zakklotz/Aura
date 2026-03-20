@@ -21,12 +21,13 @@
     },
     "android": {
       "package": "com.aura.softphone",
-      "googleServicesFile": "./google-services.json"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "70b67a03-4315-4efb-94b0-f868dee41ef7"
-      }
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "plugins": [
       "@clerk/expo",
@@ -38,6 +39,12 @@
       "expo-web-browser",
       "expo-font",
       "expo-asset"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0d51fa55-de55-455a-8e09-fb170f69b78c"
+      }
+    },
+    "owner": "zakklotz"
   }
 }
