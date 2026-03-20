@@ -15,6 +15,8 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "voip",
+          "remote-notification",
+          "voip",
           "remote-notification"
         ]
       }
@@ -23,6 +25,10 @@
       "package": "com.aura.softphone",
       "googleServicesFile": "./google-services.json",
       "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
@@ -45,6 +51,12 @@
         "projectId": "0d51fa55-de55-455a-8e09-fb170f69b78c"
       }
     },
-    "owner": "zakklotz"
+    "owner": "zakklotz",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/0d51fa55-de55-455a-8e09-fb170f69b78c"
+    }
   }
 }
