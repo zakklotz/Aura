@@ -49,11 +49,43 @@ export function fetchThreads() {
   return apiFetch<ThreadsPayload>("/api/threads");
 }
 
+export type HistorySyncPayload = {
+  state: "idle" | "syncing" | "completed" | "failed";
+  startedAt: string | null;
+  completedAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  errorMessage: string | null;
+  importedMessages: number;
+  importedCalls: number;
+  importedVoicemails: number;
+  isSyncAvailable: boolean;
+  unavailableReason: string | null;
+  primaryPhoneNumberId: string | null;
+  primaryPhoneNumberE164: string | null;
+};
+
+export type RecentCallsPayload = {
+  items: Array<{
+    id: string;
+    callSid: string;
+    threadId: string;
+    eventType: "MISSED_CALL" | "CALL_COMPLETED" | "CALL_DECLINED";
+    direction: "INBOUND" | "OUTBOUND";
+    title: string;
+    externalParticipantE164: string;
+    occurredAt: string;
+    durationSeconds: number | null;
+    providerStatus: string | null;
+    errorCode: string | null;
+  }>;
+};
+
 export function fetchThread(threadId: string) {
   return apiFetch<{
     thread: {
       id: string;
       title: string;
+      contactId: string | null;
       totalUnreadCount: number;
       lastOccurredAt: string;
       externalParticipantE164: string;
@@ -91,6 +123,15 @@ export function fetchMailbox() {
   }>("/api/mailbox");
 }
 
+export function markVoicemailHeard(voicemailId: string) {
+  return apiFetch<{ ok: true }>(`/api/voicemails/${voicemailId}/heard`, {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": `heard-${voicemailId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    },
+  });
+}
+
 export function fetchContacts() {
   return apiFetch<{
     contacts: Array<{
@@ -102,8 +143,83 @@ export function fetchContacts() {
   }>("/api/contacts");
 }
 
+export function createContact(input: {
+  displayName: string;
+  notes?: string;
+  phoneNumbers: Array<{ e164: string; label?: string }>;
+}) {
+  return apiFetch<{
+    contact: {
+      id: string;
+      displayName: string;
+      notes: string | null;
+      phoneNumbers: Array<{ id: string; e164: string; label: string | null }>;
+    };
+  }>("/api/contacts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateContact(
+  contactId: string,
+  input: {
+    displayName?: string;
+    notes?: string | null;
+  }
+) {
+  return apiFetch<{
+    contact: {
+      id: string;
+      displayName: string;
+      notes: string | null;
+      phoneNumbers: Array<{ id: string; e164: string; label: string | null }>;
+    };
+  }>(`/api/contacts/${contactId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export function fetchSettings() {
-  return apiFetch("/api/settings/communication");
+  return apiFetch<{
+    business: {
+      id: string;
+      displayName: string | null;
+      onboardingState: string;
+    };
+    voiceRegistrationState: string;
+    playbackDefaultsToSpeaker: boolean;
+    primaryPhoneNumber: {
+      id: string;
+      e164: string;
+      label: string | null;
+    } | null;
+    greetings: Array<{
+      id: string;
+      label: string | null;
+      mode: "TTS" | "RECORDED";
+      ttsText: string | null;
+      audioUrl: string | null;
+      isActive: boolean;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+  }>("/api/settings/communication");
+}
+
+export function fetchHistorySyncStatus() {
+  return apiFetch<HistorySyncPayload>("/api/history-sync");
+}
+
+export function startHistorySync() {
+  return apiFetch<HistorySyncPayload>("/api/history-sync", {
+    method: "POST",
+  });
+}
+
+export function fetchRecentCalls() {
+  return apiFetch<RecentCallsPayload>("/api/calls/recent");
 }
 
 export type CallSessionPayload = {

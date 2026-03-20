@@ -28,6 +28,7 @@ export function SocketBootstrap({
     const refetchAll = () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.threads });
       queryClient.invalidateQueries({ queryKey: queryKeys.mailbox });
+      queryClient.invalidateQueries({ queryKey: queryKeys.recentCalls });
       queryClient.invalidateQueries({ queryKey: queryKeys.bootstrap });
       queryClient.invalidateQueries({ queryKey: queryKeys.callSession });
     };

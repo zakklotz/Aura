@@ -13,10 +13,18 @@ import { AppStateRefetcher } from "./src/components/AppStateRefetcher";
 import { SocketBootstrap } from "./src/components/SocketBootstrap";
 import { VoiceBootstrap } from "./src/components/VoiceBootstrap";
 import { CallNavigationController } from "./src/components/CallNavigationController";
+import { HistorySyncBootstrap } from "./src/components/HistorySyncBootstrap";
 import { colors } from "./src/theme/colors";
 
 const clerkPublishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 15_000,
+      retry: 1,
+    },
+  },
+});
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -49,6 +57,7 @@ function AppShell() {
           <AppStateRefetcher queryClient={queryClient} />
           <SocketBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
           <VoiceBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
+          <HistorySyncBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
           <CallNavigationController />
           <AppNavigator isSignedIn={Boolean(auth.isSignedIn)} />
         </NavigationContainer>

@@ -43,6 +43,7 @@ threadsRouter.get("/:threadId", requireUser, requireBusiness, async (req, res) =
         id: thread.id,
         businessId: thread.businessId,
         phoneNumberId: thread.phoneNumberId,
+        contactId: thread.contact?.id ?? null,
         externalParticipantE164: thread.externalParticipantE164,
         title: thread.contact?.displayName ?? thread.externalParticipantE164,
         lastOccurredAt: thread.lastOccurredAt,

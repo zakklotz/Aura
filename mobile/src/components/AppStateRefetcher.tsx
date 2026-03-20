@@ -8,8 +8,10 @@ export function AppStateRefetcher({ queryClient }: { queryClient: QueryClient })
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
         queryClient.invalidateQueries({ queryKey: queryKeys.bootstrap });
+        queryClient.invalidateQueries({ queryKey: queryKeys.historySync });
         queryClient.invalidateQueries({ queryKey: queryKeys.threads });
         queryClient.invalidateQueries({ queryKey: queryKeys.mailbox });
+        queryClient.invalidateQueries({ queryKey: queryKeys.recentCalls });
         queryClient.invalidateQueries({ queryKey: queryKeys.callSession });
       }
     });

@@ -27,6 +27,7 @@ type NormalizedVoiceError = {
 
 const ACTIVE_CALL_STATES = new Set(["incoming", "answering", "outgoing_dialing", "connecting", "active"]);
 const RECOVERY_TIMEOUT_MS = 3_000;
+const REGISTRATION_TIMEOUT_MS = 8_000;
 
 function toLocalVoiceRegistrationState(state: "READY" | "DEGRADED" | "REGISTERING" | null | undefined) {
   switch (state) {
@@ -59,6 +60,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    delay(timeoutMs).then(() => {
+      throw new Error(message);
+    }),
+  ]);
 }
 
 function readInviteUuid(invite: CallInvite): string | null {
@@ -338,6 +348,7 @@ class TwilioVoiceService {
       });
       voice.on(Voice.Event.Registered, () => {
         useCallStore.getState().setVoiceRegistrationState("ready");
+        useCallStore.getState().setVoiceError({ code: null, message: null });
         if (!ACTIVE_CALL_STATES.has(useCallStore.getState().callState)) {
           useCallStore.getState().setCallState("ready");
         }
@@ -351,6 +362,16 @@ class TwilioVoiceService {
         const normalized = normalizeTwilioError(error, "VOICE_REGISTRATION_ERROR");
         useCallStore.getState().setVoiceRegistrationState("degraded");
         useCallStore.getState().setVoiceError(normalized);
+        void this.persistDeviceState({
+          voiceRegistrationState: "DEGRADED",
+          twilioIdentity: this.currentIdentity,
+          lastRegistrationErrorCode: normalized.code,
+          lastRegistrationErrorMessage: normalized.message,
+        });
+        if (!ACTIVE_CALL_STATES.has(useCallStore.getState().callState)) {
+          useCallStore.getState().setCallState("failed");
+          this.scheduleReadySettle();
+        }
       });
       this.listenersBound = true;
     }
@@ -389,6 +410,7 @@ class TwilioVoiceService {
     this.currentDeviceId = deviceId;
     store.setDeviceId(deviceId);
     store.setVoiceRegistrationState("registering");
+    store.setVoiceError({ code: null, message: null });
     if (store.callState === "idle" || store.callState === "failed") {
       store.setCallState("registering");
     }
@@ -408,7 +430,11 @@ class TwilioVoiceService {
         refreshAfter: tokenPayload.refreshAfter,
       });
 
-      await this.getVoice().register(tokenPayload.token);
+      await withTimeout(
+        this.getVoice().register(tokenPayload.token),
+        REGISTRATION_TIMEOUT_MS,
+        "Voice registration timed out while registering this device."
+      );
       const voicePushToken = await this.safeGetVoicePushToken();
       await this.persistDeviceState({
         voiceRegistrationState: "READY",
@@ -462,12 +488,20 @@ class TwilioVoiceService {
       });
 
       try {
-        await this.getVoice().register(tokenPayload.token);
+        await withTimeout(
+          this.getVoice().register(tokenPayload.token),
+          REGISTRATION_TIMEOUT_MS,
+          "Voice registration timed out while refreshing this device."
+        );
       } catch (error) {
         if (previousToken) {
           await this.getVoice().unregister(previousToken).catch(() => undefined);
         }
-        await this.getVoice().register(tokenPayload.token);
+        await withTimeout(
+          this.getVoice().register(tokenPayload.token),
+          REGISTRATION_TIMEOUT_MS,
+          "Voice registration timed out while retrying this device refresh."
+        );
       }
 
       const voicePushToken = await this.safeGetVoicePushToken();
@@ -564,7 +598,22 @@ class TwilioVoiceService {
     ]);
 
     if (timedOut) {
+      const normalized = {
+        code: "VOICE_REGISTRATION_ERROR" as const,
+        message: "Voice recovery timed out while the app was starting. Aura will keep trying in the background.",
+      };
       store.setVoiceRegistrationState("degraded");
+      store.setVoiceError(normalized);
+      if (!ACTIVE_CALL_STATES.has(store.callState)) {
+        store.setCallState("failed");
+        this.scheduleReadySettle();
+      }
+      void this.persistDeviceState({
+        voiceRegistrationState: "DEGRADED",
+        twilioIdentity: this.currentIdentity,
+        lastRegistrationErrorCode: normalized.code,
+        lastRegistrationErrorMessage: normalized.message,
+      });
       store.setRecoveryState(false);
       recovery.catch(() => undefined);
     }

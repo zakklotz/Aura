@@ -12,6 +12,12 @@
   "scripts": {
     "dev:api": "npm run dev --workspace api",
     "dev:mobile": "npm run start:no-devtools --workspace mobile --",
+    "build:mobile:development": "npm run build:development --workspace mobile",
+    "build:mobile:preview": "npm run build:preview --workspace mobile",
+    "build:mobile:production": "npm run build:production --workspace mobile",
+    "ota:development": "npm run update:development --workspace mobile --",
+    "ota:preview": "npm run update:preview --workspace mobile --",
+    "ota:production": "npm run update:production --workspace mobile --",
     "postinstall": "node scripts/fix-clerk-expo.js",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

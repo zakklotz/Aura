@@ -16,6 +16,8 @@ import { contactImportsRouter } from "./modules/contactImports/router.js";
 import { devicesRouter } from "./modules/devices/router.js";
 import { callsRouter } from "./modules/calls/router.js";
 import { callSessionRouter } from "./modules/calls/sessionRouter.js";
+import { recentCallsRouter } from "./modules/calls/recentRouter.js";
+import { historySyncRouter } from "./modules/historySync/router.js";
 import { twilioRouter } from "./modules/twilio/router.js";
 import { mailboxRouter } from "./modules/mailbox/router.js";
 import { setIo } from "./lib/socket.js";
@@ -57,9 +59,11 @@ export function createApp() {
   app.use("/api/contact-imports", contactImportsRouter);
   app.use("/api/devices", devicesRouter);
   app.use("/api/voice", callsRouter);
+  app.use("/api/calls", recentCallsRouter);
   app.use("/api/voicemails", voicemailsRouter);
   app.use("/api/mailbox", mailboxRouter);
   app.use("/api/call-session", callSessionRouter);
+  app.use("/api/history-sync", historySyncRouter);
   app.use("/webhooks/twilio", twilioRouter);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
