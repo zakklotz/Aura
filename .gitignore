@@ -16,6 +16,5 @@ mobile/.expo
 api/prisma/dev.db
 api/prisma/dev.db-journal
 *.tsbuildinfo
-mobile/google-services.json
 clerk-expo
 *firebase*.json
