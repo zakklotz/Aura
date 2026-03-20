@@ -1,5 +1,6 @@
 import {
   CallEventType,
+  HistorySyncJobStatus,
   MessageDeliveryStatus,
   ThreadItemType,
   UnreadState,
@@ -73,8 +74,8 @@ type HistorySyncAvailability = {
 
 const SYNC_LOOKBACK_DAYS = 180;
 const SYNC_LIMIT_PER_COLLECTION = 200;
+const INTERRUPTED_SYNC_MESSAGE = "History sync was interrupted by an API restart. Run sync again.";
 
-const syncSnapshots = new Map<string, HistorySyncSnapshot>();
 const runningSyncs = new Map<string, Promise<void>>();
 
 function nowIso() {
@@ -94,45 +95,127 @@ function defaultSnapshot(): HistorySyncSnapshot {
   };
 }
 
-function getSnapshot(businessId: string): HistorySyncSnapshot {
-  return syncSnapshots.get(businessId) ?? defaultSnapshot();
+function fromDbStatus(status: HistorySyncJobStatus): HistorySyncState {
+  switch (status) {
+    case HistorySyncJobStatus.SYNCING:
+      return "syncing";
+    case HistorySyncJobStatus.COMPLETED:
+      return "completed";
+    case HistorySyncJobStatus.FAILED:
+      return "failed";
+    default:
+      return "idle";
+  }
+}
+
+function toDbStatus(state: HistorySyncState): HistorySyncJobStatus {
+  switch (state) {
+    case "syncing":
+      return HistorySyncJobStatus.SYNCING;
+    case "completed":
+      return HistorySyncJobStatus.COMPLETED;
+    case "failed":
+      return HistorySyncJobStatus.FAILED;
+    default:
+      return HistorySyncJobStatus.IDLE;
+  }
+}
+
+function jobToSnapshot(
+  job:
+    | {
+        status: HistorySyncJobStatus;
+        startedAt: Date | null;
+        completedAt: Date | null;
+        lastSuccessfulSyncAt: Date | null;
+        errorMessage: string | null;
+        importedMessages: number;
+        importedCalls: number;
+        importedVoicemails: number;
+      }
+    | null
+): HistorySyncSnapshot {
+  if (!job) {
+    return defaultSnapshot();
+  }
+
+  return {
+    state: fromDbStatus(job.status),
+    startedAt: job.startedAt?.toISOString() ?? null,
+    completedAt: job.completedAt?.toISOString() ?? null,
+    lastSuccessfulSyncAt: job.lastSuccessfulSyncAt?.toISOString() ?? null,
+    errorMessage: job.errorMessage ?? null,
+    importedMessages: job.importedMessages,
+    importedCalls: job.importedCalls,
+    importedVoicemails: job.importedVoicemails,
+  };
+}
+
+async function getSnapshot(businessId: string): Promise<HistorySyncSnapshot> {
+  const job = await prisma.historySyncJob.findUnique({
+    where: { businessId },
+  });
+  return jobToSnapshot(job);
+}
+
+async function setSnapshot(businessId: string, next: HistorySyncSnapshot): Promise<void> {
+  await prisma.historySyncJob.upsert({
+    where: { businessId },
+    create: {
+      businessId,
+      status: toDbStatus(next.state),
+      startedAt: next.startedAt ? new Date(next.startedAt) : null,
+      completedAt: next.completedAt ? new Date(next.completedAt) : null,
+      lastSuccessfulSyncAt: next.lastSuccessfulSyncAt ? new Date(next.lastSuccessfulSyncAt) : null,
+      errorMessage: next.errorMessage,
+      importedMessages: next.importedMessages,
+      importedCalls: next.importedCalls,
+      importedVoicemails: next.importedVoicemails,
+    },
+    update: {
+      status: toDbStatus(next.state),
+      startedAt: next.startedAt ? new Date(next.startedAt) : null,
+      completedAt: next.completedAt ? new Date(next.completedAt) : null,
+      lastSuccessfulSyncAt: next.lastSuccessfulSyncAt ? new Date(next.lastSuccessfulSyncAt) : null,
+      errorMessage: next.errorMessage,
+      importedMessages: next.importedMessages,
+      importedCalls: next.importedCalls,
+      importedVoicemails: next.importedVoicemails,
+    },
+  });
+}
+
+async function markInterruptedSyncIfNeeded(businessId: string): Promise<void> {
+  if (runningSyncs.has(businessId)) {
+    return;
+  }
+
+  const job = await prisma.historySyncJob.findUnique({
+    where: { businessId },
+  });
+
+  if (!job || job.status !== HistorySyncJobStatus.SYNCING) {
+    return;
+  }
+
+  await prisma.historySyncJob.update({
+    where: { businessId },
+    data: {
+      status: HistorySyncJobStatus.FAILED,
+      completedAt: new Date(),
+      errorMessage: INTERRUPTED_SYNC_MESSAGE,
+    },
+  });
 }
 
 async function getAvailability(businessId: string): Promise<HistorySyncAvailability> {
-  const primaryPhoneNumber = await prisma.phoneNumber.findFirst({
-    where: {
-      businessId,
-      isPrimary: true,
-    },
-    orderBy: {
-      createdAt: "asc",
-    },
-  });
-
+  const primaryPhoneNumber = await requirePrimaryPhoneNumberForBusiness(businessId).catch(() => null);
   if (!primaryPhoneNumber) {
-    const anyPhoneNumber = await prisma.phoneNumber.findFirst({
-      where: {
-        businessId,
-      },
-      orderBy: {
-        createdAt: "asc",
-      },
-    });
-
-    if (!anyPhoneNumber) {
-      return {
-        isSyncAvailable: false,
-        unavailableReason: "Add a business phone number before syncing history.",
-        primaryPhoneNumberId: null,
-        primaryPhoneNumberE164: null,
-      };
-    }
-
     return {
-      isSyncAvailable: Boolean(twilioClient),
-      unavailableReason: twilioClient ? null : "Twilio account history sync needs ACCOUNT SID and AUTH TOKEN configured.",
-      primaryPhoneNumberId: anyPhoneNumber.id,
-      primaryPhoneNumberE164: anyPhoneNumber.e164,
+      isSyncAvailable: false,
+      unavailableReason: "Add a business phone number before syncing history.",
+      primaryPhoneNumberId: null,
+      primaryPhoneNumberE164: null,
     };
   }
 
@@ -206,10 +289,6 @@ function syncWindowStart(snapshot: HistorySyncSnapshot): Date {
     return new Date(new Date(snapshot.lastSuccessfulSyncAt).getTime() - 24 * 60 * 60 * 1000);
   }
   return new Date(Date.now() - SYNC_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
-}
-
-function setSnapshot(businessId: string, next: HistorySyncSnapshot) {
-  syncSnapshots.set(businessId, next);
 }
 
 async function listMessagesForPhone(phoneNumber: PhoneNumber, startDate: Date): Promise<TwilioHistoryMessage[]> {
@@ -522,7 +601,7 @@ async function syncHistoryRecording(
 }
 
 async function runHistorySync(businessId: string): Promise<void> {
-  const previousSnapshot = getSnapshot(businessId);
+  const previousSnapshot = await getSnapshot(businessId);
   const phoneNumber = await requirePrimaryPhoneNumberForBusiness(businessId);
   if (!twilioClient) {
     throw new AppError(503, "internal_error", "Twilio account history sync needs ACCOUNT SID and AUTH TOKEN configured.");
@@ -559,11 +638,12 @@ async function runHistorySync(businessId: string): Promise<void> {
     }
   }
 
-  setSnapshot(businessId, {
+  const completedAt = nowIso();
+  await setSnapshot(businessId, {
     state: "completed",
     startedAt: previousSnapshot.startedAt,
-    completedAt: nowIso(),
-    lastSuccessfulSyncAt: nowIso(),
+    completedAt,
+    lastSuccessfulSyncAt: completedAt,
     errorMessage: null,
     importedMessages,
     importedCalls: importedCallsCount,
@@ -572,7 +652,8 @@ async function runHistorySync(businessId: string): Promise<void> {
 }
 
 export async function getHistorySyncStatus(businessId: string) {
-  const snapshot = getSnapshot(businessId);
+  await markInterruptedSyncIfNeeded(businessId);
+  const snapshot = await getSnapshot(businessId);
   const availability = await getAvailability(businessId);
   return {
     ...snapshot,
@@ -586,16 +667,19 @@ export async function startHistorySync(businessId: string) {
     throw new AppError(400, "bad_request", availability.unavailableReason ?? "History sync is not available yet.");
   }
 
+  await markInterruptedSyncIfNeeded(businessId);
+
   if (runningSyncs.has(businessId)) {
     return getHistorySyncStatus(businessId);
   }
 
+  const previousSnapshot = await getSnapshot(businessId);
   const startedAt = nowIso();
-  setSnapshot(businessId, {
+  await setSnapshot(businessId, {
     state: "syncing",
     startedAt,
     completedAt: null,
-    lastSuccessfulSyncAt: getSnapshot(businessId).lastSuccessfulSyncAt,
+    lastSuccessfulSyncAt: previousSnapshot.lastSuccessfulSyncAt,
     errorMessage: null,
     importedMessages: 0,
     importedCalls: 0,
@@ -605,13 +689,14 @@ export async function startHistorySync(businessId: string) {
   const promise = runHistorySync(businessId)
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : "History sync failed";
-      const snapshot = getSnapshot(businessId);
-      setSnapshot(businessId, {
+      return getSnapshot(businessId).then((snapshot) =>
+        setSnapshot(businessId, {
         ...snapshot,
         state: "failed",
         completedAt: nowIso(),
         errorMessage: message,
-      });
+        })
+      );
     })
     .finally(() => {
       runningSyncs.delete(businessId);

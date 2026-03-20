@@ -143,6 +143,33 @@ export function fetchContacts() {
   }>("/api/contacts");
 }
 
+export function importContactsCsv(input: {
+  rows: Array<{
+    displayName: string;
+    numbers: string[];
+    notes?: string;
+  }>;
+}) {
+  return apiFetch<{
+    job: {
+      id: string;
+      status: string;
+      totalRows: number;
+      createdCount: number;
+      mergedCount: number;
+      skippedCount: number;
+      errorCount: number;
+      completedAt: string | null;
+    };
+  }>("/api/contact-imports/csv", {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": `csv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
 export function createContact(input: {
   displayName: string;
   notes?: string;
@@ -205,6 +232,14 @@ export function fetchSettings() {
       createdAt: string;
       updatedAt: string;
     }>;
+    featureReadiness: {
+      voiceConfigured: boolean;
+      voiceUnavailableReason: string | null;
+      historySyncAvailable: boolean;
+      historySyncUnavailableReason: string | null;
+      hasPrimaryPhoneNumber: boolean;
+      missingSetupStep: "BUSINESS_PROFILE" | "PHONE_NUMBER" | "GREETING" | null;
+    };
   }>("/api/settings/communication");
 }
 

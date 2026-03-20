@@ -3,6 +3,20 @@ import { getOrCreateDeviceId } from "../device/deviceIdentity";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
+export class ApiError extends Error {
+  code: string | null;
+  status: number;
+  details: unknown;
+
+  constructor(input: { message: string; code?: string | null; status: number; details?: unknown }) {
+    super(input.message);
+    this.name = "ApiError";
+    this.code = input.code ?? null;
+    this.status = input.status;
+    this.details = input.details ?? null;
+  }
+}
+
 async function buildHeaders(): Promise<Record<string, string>> {
   const deviceId = await getOrCreateDeviceId();
   const headers: Record<string, string> = {
@@ -36,11 +50,24 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null);
-    const errorMessage =
-      errorBody && typeof errorBody === "object" && "error" in errorBody
-        ? JSON.stringify(errorBody.error)
-        : `Request failed with ${response.status}`;
-    throw new Error(errorMessage);
+    if (errorBody && typeof errorBody === "object" && "error" in errorBody && typeof errorBody.error === "object" && errorBody.error) {
+      const apiError = errorBody.error as {
+        code?: string | null;
+        message?: string | null;
+        details?: unknown;
+      };
+      throw new ApiError({
+        status: response.status,
+        code: apiError.code ?? null,
+        message: apiError.message ?? `Request failed with ${response.status}`,
+        details: apiError.details ?? null,
+      });
+    }
+
+    throw new ApiError({
+      status: response.status,
+      message: `Request failed with ${response.status}`,
+    });
   }
 
   if (response.status === 204) {

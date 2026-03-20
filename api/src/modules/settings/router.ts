@@ -11,6 +11,8 @@ import { claimIdempotency, resolveIdempotency } from "../../lib/idempotency.js";
 import { hashRequestBody } from "../../lib/hash.js";
 import { syncBusinessOnboardingState } from "../businesses/service.js";
 import { getPrimaryPhoneNumberForBusiness } from "../phoneNumbers/service.js";
+import { hasTwilioVoiceConfig } from "../../lib/env.js";
+import { getHistorySyncStatus } from "../historySync/service.js";
 
 export const settingsRouter = Router();
 
@@ -29,6 +31,8 @@ settingsRouter.get("/communication", requireUser, requireBusiness, async (req, r
       where: { id: viewer.businessId! },
     });
     const primaryPhoneNumber = await getPrimaryPhoneNumberForBusiness(viewer.businessId!);
+    const onboardingState = await syncBusinessOnboardingState(viewer.businessId!);
+    const historySyncStatus = await getHistorySyncStatus(viewer.businessId!);
     const greetings = primaryPhoneNumber
       ? await prisma.voicemailGreeting.findMany({
           where: { phoneNumberId: primaryPhoneNumber.id },
@@ -40,12 +44,31 @@ settingsRouter.get("/communication", requireUser, requireBusiness, async (req, r
       business: {
         id: business.id,
         displayName: business.displayName,
-        onboardingState: business.onboardingState,
+        onboardingState,
       },
       voiceRegistrationState: viewer.voiceRegistrationState,
       playbackDefaultsToSpeaker: true,
       primaryPhoneNumber,
       greetings,
+      featureReadiness: {
+        voiceConfigured: hasTwilioVoiceConfig(),
+        voiceUnavailableReason: primaryPhoneNumber
+          ? hasTwilioVoiceConfig()
+            ? null
+            : "Server Twilio voice configuration is incomplete."
+          : "Add a business phone number before calling can work.",
+        historySyncAvailable: historySyncStatus.isSyncAvailable,
+        historySyncUnavailableReason: historySyncStatus.unavailableReason,
+        hasPrimaryPhoneNumber: Boolean(primaryPhoneNumber),
+        missingSetupStep:
+          onboardingState === "NEEDS_BUSINESS_PROFILE"
+            ? "BUSINESS_PROFILE"
+            : onboardingState === "NEEDS_PHONE_NUMBER"
+              ? "PHONE_NUMBER"
+              : onboardingState === "NEEDS_GREETING"
+                ? "GREETING"
+                : null,
+      },
     });
   } catch (error) {
     sendAppError(res, error);

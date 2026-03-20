@@ -160,6 +160,13 @@ enum ContactSource {
   PHONEBOOK
 }
 
+enum HistorySyncJobStatus {
+  IDLE
+  SYNCING
+  COMPLETED
+  FAILED
+}
+
 model User {
   id                  String               @id
   email               String?              @unique
@@ -188,6 +195,7 @@ model Business {
   contacts            Contact[]
   contactPhoneNumbers ContactPhoneNumber[]
   contactImportJobs   ContactImportJob[]
+  historySyncJob      HistorySyncJob?
   threads             Thread[]
   threadItems         ThreadItem[]
   messages            Message[]
@@ -202,6 +210,25 @@ model Business {
 
   @@index([onboardingState], map: "businesses_onboarding_state_idx")
   @@map("businesses")
+}
+
+model HistorySyncJob {
+  id                   String               @id @default(cuid())
+  businessId           String               @unique @map("business_id")
+  status               HistorySyncJobStatus @default(IDLE)
+  startedAt            DateTime?            @map("started_at")
+  completedAt          DateTime?            @map("completed_at")
+  lastSuccessfulSyncAt DateTime?            @map("last_successful_sync_at")
+  errorMessage         String?              @map("error_message")
+  importedMessages     Int                  @default(0) @map("imported_messages")
+  importedCalls        Int                  @default(0) @map("imported_calls")
+  importedVoicemails   Int                  @default(0) @map("imported_voicemails")
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @updatedAt @map("updated_at")
+  business             Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt], map: "history_sync_jobs_status_updated_at_idx")
+  @@map("history_sync_jobs")
 }
 
 model BusinessMembership {

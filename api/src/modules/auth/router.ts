@@ -75,8 +75,8 @@ authRouter.get("/bootstrap", requireUser, async (req, res) => {
     const business = await prisma.business.findUniqueOrThrow({
       where: { id: membership.businessId },
     });
-    const onboardingState = await syncBusinessOnboardingState(business.id);
     const primaryPhoneNumber = await getPrimaryPhoneNumberForBusiness(business.id);
+    const onboardingState = await syncBusinessOnboardingState(business.id);
 
     res.json({
       user: {

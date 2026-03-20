@@ -12,7 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useClerk } from "@clerk/expo";
 import { useQuery } from "@tanstack/react-query";
-import { fetchHistorySyncStatus, fetchSettings } from "../services/api/softphoneApi";
+import { fetchHistorySyncStatus, fetchSettings, startHistorySync } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { useCallStore } from "../store/callStore";
 import { colors } from "../theme/colors";
@@ -61,6 +61,7 @@ export function SettingsScreen() {
   const { signOut } = useClerk();
   const { callState, voiceRegistrationState, lastVoiceErrorCode, lastVoiceErrorMessage } = useCallStore();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isStartingSync, setIsStartingSync] = useState(false);
   const settingsQuery = useQuery({ queryKey: queryKeys.settings, queryFn: fetchSettings });
   const historySyncQuery = useQuery({ queryKey: queryKeys.historySync, queryFn: fetchHistorySyncStatus });
 
@@ -80,6 +81,16 @@ export function SettingsScreen() {
       await signOut();
     } finally {
       setIsSigningOut(false);
+    }
+  }
+
+  async function handleStartSync() {
+    try {
+      setIsStartingSync(true);
+      await startHistorySync();
+      await historySyncQuery.refetch();
+    } finally {
+      setIsStartingSync(false);
     }
   }
 
@@ -142,6 +153,48 @@ export function SettingsScreen() {
             </View>
           </View>
 
+          {data.featureReadiness.missingSetupStep || !data.featureReadiness.voiceConfigured ? (
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeader}>
+                <Ionicons name="construct-outline" size={18} color={colors.primary} />
+                <Text style={styles.sectionTitle}>Setup checklist</Text>
+              </View>
+              <View style={styles.checklistRow}>
+                <Ionicons
+                  name={data.business.displayName ? "checkmark-circle" : "ellipse-outline"}
+                  size={18}
+                  color={data.business.displayName ? colors.success : colors.muted}
+                />
+                <Text style={styles.checklistCopy}>Business profile {data.business.displayName ? "is set" : "still needs a display name"}</Text>
+              </View>
+              <View style={styles.checklistRow}>
+                <Ionicons
+                  name={data.featureReadiness.hasPrimaryPhoneNumber ? "checkmark-circle" : "ellipse-outline"}
+                  size={18}
+                  color={data.featureReadiness.hasPrimaryPhoneNumber ? colors.success : colors.muted}
+                />
+                <Text style={styles.checklistCopy}>
+                  {data.featureReadiness.hasPrimaryPhoneNumber
+                    ? "Business phone number is connected"
+                    : "Business phone number is still missing"}
+                </Text>
+              </View>
+              <View style={styles.checklistRow}>
+                <Ionicons
+                  name={data.greetings.length ? "checkmark-circle" : "ellipse-outline"}
+                  size={18}
+                  color={data.greetings.length ? colors.success : colors.muted}
+                />
+                <Text style={styles.checklistCopy}>
+                  {data.greetings.length ? "Voicemail greeting exists" : "Voicemail greeting still needs to be created"}
+                </Text>
+              </View>
+              {data.featureReadiness.voiceUnavailableReason ? (
+                <Text style={styles.statusError}>{data.featureReadiness.voiceUnavailableReason}</Text>
+              ) : null}
+            </View>
+          ) : null}
+
           <View
             style={[
               styles.sectionCard,
@@ -164,7 +217,11 @@ export function SettingsScreen() {
             <Text style={styles.statusMeta}>
               Device status: {voiceRegistrationState} • Call state: {callState}
             </Text>
+            <Text style={styles.statusMeta}>
+              Server voice config: {data.featureReadiness.voiceConfigured ? "ready" : "missing"}
+            </Text>
             {lastVoiceErrorCode ? <Text style={styles.statusError}>Last error: {lastVoiceErrorCode}</Text> : null}
+            {data.featureReadiness.voiceUnavailableReason ? <Text style={styles.statusError}>{data.featureReadiness.voiceUnavailableReason}</Text> : null}
             <Text style={styles.statusMeta}>
               Playback defaults to speaker: {data.playbackDefaultsToSpeaker ? "Yes" : "No"}
             </Text>
@@ -187,8 +244,31 @@ export function SettingsScreen() {
                   : "No completed sync yet"}
               </Text>
             </View>
+            <View style={styles.row}>
+              <Text style={styles.rowLabel}>Imported totals</Text>
+              <Text style={styles.rowValue}>
+                {historySyncQuery.data
+                  ? `${historySyncQuery.data.importedMessages} texts • ${historySyncQuery.data.importedCalls} calls • ${historySyncQuery.data.importedVoicemails} voicemails`
+                  : "No sync data yet"}
+              </Text>
+            </View>
             {historySyncQuery.data?.errorMessage ? (
               <Text style={styles.statusError}>{historySyncQuery.data.errorMessage}</Text>
+            ) : null}
+            {data.featureReadiness.historySyncUnavailableReason ? (
+              <Text style={styles.statusError}>{data.featureReadiness.historySyncUnavailableReason}</Text>
+            ) : null}
+            {historySyncQuery.data?.isSyncAvailable ? (
+              <Pressable onPress={handleStartSync} style={styles.syncButton} disabled={isStartingSync || historySyncQuery.data.state === "syncing"}>
+                {isStartingSync || historySyncQuery.data.state === "syncing" ? (
+                  <ActivityIndicator size="small" color={colors.surface} />
+                ) : (
+                  <>
+                    <Ionicons name="cloud-download-outline" size={18} color={colors.surface} />
+                    <Text style={styles.syncButtonLabel}>Sync now</Text>
+                  </>
+                )}
+              </Pressable>
             ) : null}
           </View>
 
@@ -319,6 +399,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  checklistRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  checklistCopy: {
+    color: colors.text,
+    flex: 1,
+    lineHeight: 20,
+  },
   statusInfo: {
     backgroundColor: "#dbeafe",
   },
@@ -382,6 +472,19 @@ const styles = StyleSheet.create({
   emptyCopy: {
     color: colors.muted,
     lineHeight: 20,
+  },
+  syncButton: {
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  syncButtonLabel: {
+    color: colors.surface,
+    fontWeight: "800",
   },
   signOutButton: {
     minHeight: 52,

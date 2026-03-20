@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   Pressable,
@@ -10,19 +11,81 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
-import { useQuery } from "@tanstack/react-query";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { fetchContacts } from "../services/api/softphoneApi";
+import { fetchContacts, importContactsCsv } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { colors } from "../theme/colors";
 import type { RootStackParamList } from "../navigation/types";
 import { BrandedEmptyState } from "../components/BrandedEmptyState";
+import { parseContactCsv } from "../lib/contactCsv";
+import { ApiError } from "../services/api/client";
 
 const heroImage = require("../../assets/icon.png");
 
 export function ContactsScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const queryClient = useQueryClient();
   const query = useQuery({ queryKey: queryKeys.contacts, queryFn: fetchContacts });
+  const [isImporting, setIsImporting] = useState(false);
+  const [importErrorMessage, setImportErrorMessage] = useState<string | null>(null);
+  const [importSummary, setImportSummary] = useState<{
+    createdCount: number;
+    mergedCount: number;
+    skippedCount: number;
+    skippedInFile: number;
+  } | null>(null);
+
+  async function handleImportCsv() {
+    if (isImporting) {
+      return;
+    }
+
+    try {
+      setIsImporting(true);
+      setImportErrorMessage(null);
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["text/*", "text/csv", "text/comma-separated-values", "application/csv", "application/vnd.ms-excel", "*/*"],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+
+      if (result.canceled || !result.assets[0]?.uri) {
+        return;
+      }
+
+      const fileContents = await FileSystem.readAsStringAsync(result.assets[0].uri);
+      const parsed = parseContactCsv(fileContents);
+      if (parsed.rows.length === 0) {
+        setImportSummary({
+          createdCount: 0,
+          mergedCount: 0,
+          skippedCount: 0,
+          skippedInFile: parsed.skippedRows,
+        });
+        return;
+      }
+
+      const response = await importContactsCsv({ rows: parsed.rows });
+      setImportSummary({
+        createdCount: response.job.createdCount,
+        mergedCount: response.job.mergedCount,
+        skippedCount: response.job.skippedCount,
+        skippedInFile: parsed.skippedRows,
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.contacts });
+    } catch (error) {
+      setImportErrorMessage(
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Aura could not import that CSV file."
+      );
+    } finally {
+      setIsImporting(false);
+    }
+  }
 
   return (
     <FlatList
@@ -62,10 +125,34 @@ export function ContactsScreen() {
             </View>
           </View>
 
-          <Pressable onPress={() => navigation.navigate("ContactCard")} style={styles.addButton}>
-            <Ionicons name="add" size={18} color={colors.surface} />
-            <Text style={styles.addButtonLabel}>Add contact</Text>
-          </Pressable>
+          <View style={styles.actionRow}>
+            <Pressable onPress={() => navigation.navigate("ContactCard")} style={styles.addButton}>
+              <Ionicons name="add" size={18} color={colors.surface} />
+              <Text style={styles.addButtonLabel}>Add contact</Text>
+            </Pressable>
+
+            <Pressable onPress={() => void handleImportCsv()} style={styles.importButton} disabled={isImporting}>
+              {isImporting ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <>
+                  <Ionicons name="document-attach-outline" size={18} color={colors.primary} />
+                  <Text style={styles.importButtonLabel}>Import CSV</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+
+          {importSummary ? (
+            <View style={styles.importSummaryCard}>
+              <Text style={styles.importSummaryTitle}>Last CSV import</Text>
+              <Text style={styles.importSummaryBody}>
+                {importSummary.createdCount} created • {importSummary.mergedCount} merged • {importSummary.skippedCount} skipped by API • {importSummary.skippedInFile} skipped in file cleanup
+              </Text>
+            </View>
+          ) : null}
+
+          {importErrorMessage ? <Text style={styles.importError}>{importErrorMessage}</Text> : null}
         </View>
       }
       ListEmptyComponent={
@@ -146,6 +233,47 @@ const styles = StyleSheet.create({
   addButtonLabel: {
     color: colors.surface,
     fontWeight: "800",
+  },
+  actionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  importButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "#eff6ff",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+  importButtonLabel: {
+    color: colors.primary,
+    fontWeight: "800",
+  },
+  importSummaryCard: {
+    backgroundColor: "#eff6ff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+    padding: 14,
+    gap: 4,
+  },
+  importSummaryTitle: {
+    color: colors.primary,
+    fontWeight: "800",
+  },
+  importSummaryBody: {
+    color: colors.text,
+    lineHeight: 20,
+  },
+  importError: {
+    color: colors.danger,
+    lineHeight: 20,
   },
   contactCard: {
     backgroundColor: colors.surface,

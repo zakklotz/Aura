@@ -20,6 +20,7 @@ export const env = {
   twilioApiKeySecret: process.env.TWILIO_API_KEY_SECRET?.trim() ?? "",
   twilioTwimlAppSid: process.env.TWILIO_TWIML_APP_SID?.trim() ?? "",
   twilioPushCredentialSid: process.env.TWILIO_PUSH_CREDENTIAL_SID?.trim() ?? "",
+  twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER?.trim() ?? process.env.TWILIO_CALLER_ID?.trim() ?? "",
   twilioCallerId: process.env.TWILIO_CALLER_ID?.trim() ?? "",
   twilioWebhookAuthToken: process.env.TWILIO_WEBHOOK_AUTH_TOKEN?.trim() || process.env.TWILIO_AUTH_TOKEN?.trim() || "",
   r2AccountId: process.env.R2_ACCOUNT_ID?.trim() ?? "",

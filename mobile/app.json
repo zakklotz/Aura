@@ -4,18 +4,22 @@
     "slug": "aura-softphone",
     "scheme": "aura",
     "version": "1.0.0",
+    "icon": "./assets/app_icon_1024.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": [
       "**/*"
     ],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f6f7f9"
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.aura.softphone",
       "infoPlist": {
         "UIBackgroundModes": [
-          "voip",
-          "remote-notification",
           "voip",
           "remote-notification"
         ]
@@ -24,11 +28,11 @@
     "android": {
       "package": "com.aura.softphone",
       "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
+        "backgroundImage": "./assets/adaptive-icon-background.png"
+      },
       "permissions": [
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",

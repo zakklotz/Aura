@@ -68,7 +68,7 @@ export function MessagesScreen() {
         tone: "danger" as const,
         title: "History sync needs attention",
         description: historySync.data.errorMessage ?? "The last import attempt failed.",
-        actionLabel: "Retry import",
+        actionLabel: "Sync now",
       };
     }
 
@@ -77,14 +77,19 @@ export function MessagesScreen() {
         tone: "success" as const,
         title: "History imported",
         description: `Last synced ${formatTimestamp(historySync.data.lastSuccessfulSyncAt)}.`,
-        actionLabel: undefined,
+        actionLabel: "Sync now",
       };
     }
 
-    return null;
+    return {
+      tone: "muted" as const,
+      title: "Bring in existing history",
+      description: "Pull your prior Twilio texts, calls, and voicemails into Aura.",
+      actionLabel: "Sync now",
+    };
   }, [historySync.data]);
 
-  async function handleRetrySync() {
+  async function handleStartSync() {
     try {
       setIsStartingSync(true);
       await startHistorySync();
@@ -181,7 +186,7 @@ export function MessagesScreen() {
                 <Text style={styles.bannerDescription}>{syncBanner.description}</Text>
               </View>
               {syncBanner.actionLabel ? (
-                <Pressable onPress={handleRetrySync} style={styles.bannerButton} disabled={isStartingSync}>
+                <Pressable onPress={handleStartSync} style={styles.bannerButton} disabled={isStartingSync}>
                   {isStartingSync ? (
                     <ActivityIndicator size="small" color={colors.surface} />
                   ) : (
@@ -208,8 +213,8 @@ export function MessagesScreen() {
                 ? "Aura is backfilling your prior Twilio activity in the background."
                 : "New texts, missed calls, and voicemails will show up here."
             }
-            actionLabel={historySync.data?.state === "failed" ? "Retry import" : undefined}
-            onActionPress={historySync.data?.state === "failed" ? handleRetrySync : undefined}
+            actionLabel={historySync.data?.isSyncAvailable ? "Sync now" : undefined}
+            onActionPress={historySync.data?.isSyncAvailable ? handleStartSync : undefined}
           />
         )
       }

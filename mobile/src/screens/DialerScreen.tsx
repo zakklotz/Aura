@@ -14,13 +14,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useQuery } from "@tanstack/react-query";
-import { fetchCallSession, fetchHistorySyncStatus, fetchMailbox, fetchRecentCalls } from "../services/api/softphoneApi";
+import { fetchCallSession, fetchHistorySyncStatus, fetchMailbox, fetchRecentCalls, fetchSettings } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { useCallStore } from "../store/callStore";
 import { twilioVoiceService } from "../services/twilioVoice/twilioVoiceService";
 import { colors } from "../theme/colors";
 import { formatDuration, formatTimestamp } from "../lib/formatters";
 import type { RootStackParamList } from "../navigation/types";
+import { ApiError } from "../services/api/client";
 
 const heroImage = require("../../assets/adaptive-icon-preview.png");
 
@@ -66,6 +67,7 @@ export function DialerScreen() {
   const callSession = useQuery({ queryKey: queryKeys.callSession, queryFn: fetchCallSession });
   const mailbox = useQuery({ queryKey: queryKeys.mailbox, queryFn: fetchMailbox });
   const recentCalls = useQuery({ queryKey: queryKeys.recentCalls, queryFn: fetchRecentCalls });
+  const settings = useQuery({ queryKey: queryKeys.settings, queryFn: fetchSettings });
   const historySync = useQuery({
     queryKey: queryKeys.historySync,
     queryFn: fetchHistorySyncStatus,
@@ -73,6 +75,7 @@ export function DialerScreen() {
   });
   const [number, setNumber] = useState(externalParticipantE164 ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [callErrorMessage, setCallErrorMessage] = useState<string | null>(null);
 
   const voiceStatus = useMemo(
     () =>
@@ -85,6 +88,11 @@ export function DialerScreen() {
   );
 
   const unheardCount = (mailbox.data?.items ?? []).filter((item) => item.unheard).length;
+  const setupStep = settings.data?.featureReadiness.missingSetupStep ?? null;
+  const isCallUnavailable =
+    settings.isLoading ||
+    settings.data?.featureReadiness.hasPrimaryPhoneNumber === false ||
+    settings.data?.featureReadiness.voiceConfigured === false;
 
   async function handleCall() {
     if (!number.trim() || isSubmitting) {
@@ -92,8 +100,15 @@ export function DialerScreen() {
     }
 
     try {
+      setCallErrorMessage(null);
       setIsSubmitting(true);
       await twilioVoiceService.startOutgoingCall(number.trim());
+    } catch (error) {
+      setCallErrorMessage(
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Aura could not start the call."
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -147,8 +162,30 @@ export function DialerScreen() {
             <Text style={styles.voiceMeta}>
               Current state: {callState} • Server session: {callSession.data?.session.state ?? "idle"}
             </Text>
+            <Text style={styles.voiceMeta}>
+              Server voice config: {settings.isLoading ? "checking" : settings.data?.featureReadiness.voiceConfigured ? "ready" : "missing"}
+            </Text>
             {lastVoiceErrorCode ? <Text style={styles.voiceError}>Last error: {lastVoiceErrorCode}</Text> : null}
+            {settings.data?.featureReadiness.voiceUnavailableReason ? (
+              <Text style={styles.voiceError}>{settings.data.featureReadiness.voiceUnavailableReason}</Text>
+            ) : null}
           </View>
+
+          {setupStep ? (
+            <View style={styles.setupCard}>
+              <View style={styles.quickActionHeader}>
+                <Ionicons name="construct-outline" size={18} color={colors.primary} />
+                <Text style={styles.quickActionTitle}>Finish setup</Text>
+              </View>
+              <Text style={styles.quickActionBody}>
+                {setupStep === "BUSINESS_PROFILE"
+                  ? "Add your business name in settings so Aura can finish setup."
+                  : setupStep === "PHONE_NUMBER"
+                    ? "Your business phone number still needs to be connected."
+                    : "Create a voicemail greeting to complete setup."}
+              </Text>
+            </View>
+          ) : null}
 
           {historySync.data?.state === "syncing" ? (
             <View style={styles.syncBanner}>
@@ -190,11 +227,11 @@ export function DialerScreen() {
             />
             <Pressable
               onPress={handleCall}
-              disabled={isSubmitting || !number.trim()}
+              disabled={isSubmitting || !number.trim() || isCallUnavailable}
               style={({ pressed }) => [
                 styles.callButton,
-                (!number.trim() || isSubmitting) && styles.callButtonDisabled,
-                pressed && number.trim() && !isSubmitting ? styles.callButtonPressed : null,
+                (!number.trim() || isSubmitting || isCallUnavailable) && styles.callButtonDisabled,
+                pressed && number.trim() && !isSubmitting && !isCallUnavailable ? styles.callButtonPressed : null,
               ]}
             >
               {isSubmitting ? (
@@ -206,6 +243,7 @@ export function DialerScreen() {
                 </>
               )}
             </Pressable>
+            {callErrorMessage ? <Text style={styles.callError}>{callErrorMessage}</Text> : null}
           </View>
 
           <Text style={styles.sectionTitle}>Recent calls</Text>
@@ -365,6 +403,14 @@ const styles = StyleSheet.create({
     color: colors.text,
     flex: 1,
   },
+  setupCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 8,
+  },
   quickActionsRow: {
     flexDirection: "row",
     gap: 12,
@@ -433,6 +479,11 @@ const styles = StyleSheet.create({
     color: colors.surface,
     fontWeight: "800",
     fontSize: 16,
+  },
+  callError: {
+    color: colors.danger,
+    lineHeight: 20,
+    fontWeight: "600",
   },
   recentCard: {
     backgroundColor: colors.surface,

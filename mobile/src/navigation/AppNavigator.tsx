@@ -1,11 +1,9 @@
 import React from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MainTabParamList, RootStackParamList } from "./types";
-import { queryKeys } from "../store/queryKeys";
-import { fetchBootstrap } from "../services/api/softphoneApi";
 import { MessagesScreen } from "../screens/MessagesScreen";
 import { DialerScreen } from "../screens/DialerScreen";
 import { ContactsScreen } from "../screens/ContactsScreen";
@@ -22,6 +20,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabParamList>();
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs.Navigator
       screenOptions={({ route }) => ({
@@ -29,9 +29,9 @@ function MainTabs() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.muted,
         tabBarStyle: {
-          height: 72,
+          height: 62 + Math.max(insets.bottom, 10),
           paddingTop: 8,
-          paddingBottom: 10,
+          paddingBottom: Math.max(insets.bottom, 10),
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
         },
@@ -69,12 +69,6 @@ function MainTabs() {
 }
 
 export function AppNavigator({ isSignedIn }: { isSignedIn: boolean }) {
-  const bootstrapQuery = useQuery({
-    queryKey: queryKeys.bootstrap,
-    queryFn: fetchBootstrap,
-    enabled: isSignedIn,
-  });
-
   if (!isSignedIn) {
     return (
       <Stack.Navigator>
@@ -83,17 +77,10 @@ export function AppNavigator({ isSignedIn }: { isSignedIn: boolean }) {
     );
   }
 
-  const onboardingRequired =
-    bootstrapQuery.data?.business?.onboardingState != null &&
-    bootstrapQuery.data.business.onboardingState !== "COMPLETE";
-
   return (
     <Stack.Navigator>
-      {onboardingRequired ? (
-        <Stack.Screen name="Onboarding" component={OnboardingScreen} options={{ title: "Set up Aura" }} />
-      ) : (
-        <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
-      )}
+      <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
+      <Stack.Screen name="Onboarding" component={OnboardingScreen} options={{ title: "Set up Aura" }} />
       <Stack.Screen name="ThreadDetail" component={ThreadDetailScreen} options={({ route }) => ({ title: route.params.title })} />
       <Stack.Screen name="Mailbox" component={MailboxScreen} />
       <Stack.Screen
