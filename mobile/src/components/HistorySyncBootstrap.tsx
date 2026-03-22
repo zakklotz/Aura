@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { fetchBootstrap, fetchHistorySyncStatus, startHistorySync } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
+import { refreshAfterHistorySync } from "../services/query/communicationRefresh";
 
 export function HistorySyncBootstrap({
   queryClient,
@@ -60,10 +61,7 @@ export function HistorySyncBootstrap({
       return;
     }
 
-    queryClient.invalidateQueries({ queryKey: queryKeys.threads });
-    queryClient.invalidateQueries({ queryKey: queryKeys.mailbox });
-    queryClient.invalidateQueries({ queryKey: queryKeys.recentCalls });
-    queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+    void refreshAfterHistorySync(queryClient);
   }, [historySync.data?.completedAt, historySync.data?.state, queryClient]);
 
   return null;

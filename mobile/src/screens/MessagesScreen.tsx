@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -9,11 +9,13 @@ import {
   Text,
   View,
 } from "react-native";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { fetchHistorySyncStatus, fetchThreads, startHistorySync } from "../services/api/softphoneApi";
+import { fetchThreads } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import type { RootStackParamList } from "../navigation/types";
 import { colors } from "../theme/colors";
@@ -32,83 +34,26 @@ function countSummary(input: { unreadSmsCount: number; unreadMissedCallCount: nu
 
 export function MessagesScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [isStartingSync, setIsStartingSync] = useState(false);
+  const tabBarHeight = useBottomTabBarHeight();
+  const insets = useSafeAreaInsets();
   const query = useQuery({ queryKey: queryKeys.threads, queryFn: fetchThreads });
-  const historySync = useQuery({
-    queryKey: queryKeys.historySync,
-    queryFn: fetchHistorySyncStatus,
-    refetchInterval: (current) => (current.state.data?.state === "syncing" ? 3_000 : false),
-  });
-
-  const syncBanner = useMemo(() => {
-    if (!historySync.data) {
-      return null;
-    }
-
-    if (!historySync.data.isSyncAvailable) {
-      return {
-        tone: "muted" as const,
-        title: "History sync unavailable",
-        description: historySync.data.unavailableReason ?? "Existing Twilio history cannot be imported yet.",
-        actionLabel: undefined,
-      };
-    }
-
-    if (historySync.data.state === "syncing") {
-      return {
-        tone: "info" as const,
-        title: "Importing existing history",
-        description: "Pulling prior texts, calls, and voicemails into your inbox in the background.",
-        actionLabel: undefined,
-      };
-    }
-
-    if (historySync.data.state === "failed") {
-      return {
-        tone: "danger" as const,
-        title: "History sync needs attention",
-        description: historySync.data.errorMessage ?? "The last import attempt failed.",
-        actionLabel: "Sync now",
-      };
-    }
-
-    if (historySync.data.state === "completed" && historySync.data.lastSuccessfulSyncAt) {
-      return {
-        tone: "success" as const,
-        title: "History imported",
-        description: `Last synced ${formatTimestamp(historySync.data.lastSuccessfulSyncAt)}.`,
-        actionLabel: "Sync now",
-      };
-    }
-
-    return {
-      tone: "muted" as const,
-      title: "Bring in existing history",
-      description: "Pull your prior Twilio texts, calls, and voicemails into Aura.",
-      actionLabel: "Sync now",
-    };
-  }, [historySync.data]);
-
-  async function handleStartSync() {
-    try {
-      setIsStartingSync(true);
-      await startHistorySync();
-      await historySync.refetch();
-    } finally {
-      setIsStartingSync(false);
-    }
-  }
 
   const items = query.data?.items ?? [];
+  const isInitialLoading = query.isLoading && items.length === 0;
 
   return (
     <FlatList
       style={styles.screen}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[
+        styles.content,
+        {
+          paddingBottom: tabBarHeight + Math.max(insets.bottom, 16),
+        },
+      ]}
       data={items}
       keyExtractor={(item) => item.id}
-      refreshControl={<RefreshControl refreshing={query.isRefetching || historySync.isRefetching} onRefresh={() => {
-        void Promise.all([query.refetch(), historySync.refetch()]);
+      refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => {
+        void query.refetch();
       }} tintColor={colors.primary} />}
       renderItem={({ item }) => {
         const unreadSummary = countSummary(item);
@@ -167,39 +112,10 @@ export function MessagesScreen() {
               </Text>
             </View>
           </View>
-
-          {syncBanner ? (
-            <View
-              style={[
-                styles.banner,
-                syncBanner.tone === "danger"
-                  ? styles.bannerDanger
-                  : syncBanner.tone === "success"
-                    ? styles.bannerSuccess
-                    : syncBanner.tone === "info"
-                      ? styles.bannerInfo
-                      : styles.bannerMuted,
-              ]}
-            >
-              <View style={styles.bannerCopy}>
-                <Text style={styles.bannerTitle}>{syncBanner.title}</Text>
-                <Text style={styles.bannerDescription}>{syncBanner.description}</Text>
-              </View>
-              {syncBanner.actionLabel ? (
-                <Pressable onPress={handleStartSync} style={styles.bannerButton} disabled={isStartingSync}>
-                  {isStartingSync ? (
-                    <ActivityIndicator size="small" color={colors.surface} />
-                  ) : (
-                    <Text style={styles.bannerButtonLabel}>{syncBanner.actionLabel}</Text>
-                  )}
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
         </View>
       }
       ListEmptyComponent={
-        query.isLoading ? (
+        isInitialLoading ? (
           <View style={styles.loadingState}>
             <ActivityIndicator size="large" color={colors.primary} />
             <Text style={styles.loadingTitle}>Loading your inbox</Text>
@@ -207,14 +123,8 @@ export function MessagesScreen() {
           </View>
         ) : (
           <BrandedEmptyState
-            title={historySync.data?.state === "syncing" ? "Importing your history" : "Your inbox is ready"}
-            description={
-              historySync.data?.state === "syncing"
-                ? "Aura is backfilling your prior Twilio activity in the background."
-                : "New texts, missed calls, and voicemails will show up here."
-            }
-            actionLabel={historySync.data?.isSyncAvailable ? "Sync now" : undefined}
-            onActionPress={historySync.data?.isSyncAvailable ? handleStartSync : undefined}
+            title="Your inbox is ready"
+            description="New texts, missed calls, and voicemails will show up here."
           />
         )
       }
@@ -270,46 +180,6 @@ const styles = StyleSheet.create({
   heroDescription: {
     color: colors.muted,
     lineHeight: 20,
-  },
-  banner: {
-    borderRadius: 18,
-    padding: 16,
-    gap: 12,
-  },
-  bannerInfo: {
-    backgroundColor: "#dbeafe",
-  },
-  bannerMuted: {
-    backgroundColor: "#eef2f7",
-  },
-  bannerDanger: {
-    backgroundColor: "#fee2e2",
-  },
-  bannerSuccess: {
-    backgroundColor: "#dcfce7",
-  },
-  bannerCopy: {
-    gap: 4,
-  },
-  bannerTitle: {
-    color: colors.text,
-    fontWeight: "700",
-    fontSize: 15,
-  },
-  bannerDescription: {
-    color: colors.text,
-    lineHeight: 19,
-  },
-  bannerButton: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.text,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  bannerButtonLabel: {
-    color: colors.surface,
-    fontWeight: "700",
   },
   threadCard: {
     backgroundColor: colors.surface,

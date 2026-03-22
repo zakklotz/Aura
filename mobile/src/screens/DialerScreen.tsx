@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -14,7 +14,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useQuery } from "@tanstack/react-query";
-import { fetchCallSession, fetchHistorySyncStatus, fetchMailbox, fetchRecentCalls, fetchSettings } from "../services/api/softphoneApi";
+import {
+  fetchMailbox,
+  fetchRecentCalls,
+  fetchSettings,
+} from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { useCallStore } from "../store/callStore";
 import { twilioVoiceService } from "../services/twilioVoice/twilioVoiceService";
@@ -22,77 +26,27 @@ import { colors } from "../theme/colors";
 import { formatDuration, formatTimestamp } from "../lib/formatters";
 import type { RootStackParamList } from "../navigation/types";
 import { ApiError } from "../services/api/client";
+import { ReadinessPill } from "../components/ReadinessPill";
 
 const heroImage = require("../../assets/adaptive-icon-preview.png");
 
-function voiceCopy(input: {
-  voiceRegistrationState: "ready" | "degraded" | "registering";
-  callState: string;
-  errorMessage: string | null;
-}) {
-  if (input.callState === "active") {
-    return {
-      title: "Call in progress",
-      description: "Aura is currently connected to an active Twilio voice session.",
-      tone: "success" as const,
-    };
-  }
-
-  if (input.voiceRegistrationState === "ready") {
-    return {
-      title: "Voice is ready",
-      description: "Incoming and outgoing calling is fully registered on this device.",
-      tone: "success" as const,
-    };
-  }
-
-  if (input.voiceRegistrationState === "degraded") {
-    return {
-      title: "Voice needs attention",
-      description: input.errorMessage ?? "This device is signed in, but voice registration is degraded right now.",
-      tone: "danger" as const,
-    };
-  }
-
-  return {
-    title: "Finishing voice setup",
-    description: "Aura is still registering this device with Twilio voice services.",
-    tone: "info" as const,
-  };
-}
-
 export function DialerScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { callState, voiceRegistrationState, externalParticipantE164, lastVoiceErrorCode, lastVoiceErrorMessage } = useCallStore();
-  const callSession = useQuery({ queryKey: queryKeys.callSession, queryFn: fetchCallSession });
+  const { voiceRegistrationState, externalParticipantE164 } = useCallStore();
   const mailbox = useQuery({ queryKey: queryKeys.mailbox, queryFn: fetchMailbox });
   const recentCalls = useQuery({ queryKey: queryKeys.recentCalls, queryFn: fetchRecentCalls });
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: fetchSettings });
-  const historySync = useQuery({
-    queryKey: queryKeys.historySync,
-    queryFn: fetchHistorySyncStatus,
-    refetchInterval: (query) => (query.state.data?.state === "syncing" ? 3_000 : false),
-  });
   const [number, setNumber] = useState(externalParticipantE164 ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [callErrorMessage, setCallErrorMessage] = useState<string | null>(null);
 
-  const voiceStatus = useMemo(
-    () =>
-      voiceCopy({
-        voiceRegistrationState,
-        callState,
-        errorMessage: lastVoiceErrorMessage,
-      }),
-    [callState, lastVoiceErrorMessage, voiceRegistrationState]
-  );
-
   const unheardCount = (mailbox.data?.items ?? []).filter((item) => item.unheard).length;
-  const setupStep = settings.data?.featureReadiness.missingSetupStep ?? null;
-  const isCallUnavailable =
-    settings.isLoading ||
-    settings.data?.featureReadiness.hasPrimaryPhoneNumber === false ||
-    settings.data?.featureReadiness.voiceConfigured === false;
+  const isReady =
+    !settings.isLoading &&
+    voiceRegistrationState === "ready" &&
+    settings.data?.featureReadiness.hasPrimaryPhoneNumber === true &&
+    settings.data?.featureReadiness.voiceConfigured === true;
+  const isCallUnavailable = !isReady;
 
   async function handleCall() {
     if (!number.trim() || isSubmitting) {
@@ -105,9 +59,9 @@ export function DialerScreen() {
       await twilioVoiceService.startOutgoingCall(number.trim());
     } catch (error) {
       setCallErrorMessage(
-        error instanceof ApiError || error instanceof Error
-          ? error.message
-          : "Aura could not start the call."
+        error instanceof ApiError && error.status >= 400 && error.status < 500
+          ? "Aura couldn't start that call. Check the number and try again."
+          : "Aura couldn't start the call. Try again in a moment."
       );
     } finally {
       setIsSubmitting(false);
@@ -122,9 +76,9 @@ export function DialerScreen() {
       keyExtractor={(item) => item.id}
       refreshControl={
         <RefreshControl
-          refreshing={recentCalls.isRefetching || mailbox.isRefetching || callSession.isRefetching}
+          refreshing={recentCalls.isRefetching || mailbox.isRefetching || settings.isRefetching}
           onRefresh={() => {
-            void Promise.all([recentCalls.refetch(), mailbox.refetch(), callSession.refetch(), historySync.refetch()]);
+            void Promise.all([recentCalls.refetch(), mailbox.refetch(), settings.refetch()]);
           }}
           tintColor={colors.primary}
         />
@@ -140,79 +94,19 @@ export function DialerScreen() {
             </View>
           </View>
 
-          <View
-            style={[
-              styles.voiceCard,
-              voiceStatus.tone === "danger"
-                ? styles.voiceCardDanger
-                : voiceStatus.tone === "success"
-                  ? styles.voiceCardSuccess
-                  : styles.voiceCardInfo,
-            ]}
-          >
-            <View style={styles.voiceHeader}>
-              <Ionicons
-                name={voiceStatus.tone === "success" ? "checkmark-circle" : voiceStatus.tone === "danger" ? "warning" : "sync"}
-                size={18}
-                color={voiceStatus.tone === "danger" ? colors.danger : voiceStatus.tone === "success" ? colors.success : colors.primary}
-              />
-              <Text style={styles.voiceTitle}>{voiceStatus.title}</Text>
-            </View>
-            <Text style={styles.voiceDescription}>{voiceStatus.description}</Text>
-            <Text style={styles.voiceMeta}>
-              Current state: {callState} • Server session: {callSession.data?.session.state ?? "idle"}
-            </Text>
-            <Text style={styles.voiceMeta}>
-              Server voice config: {settings.isLoading ? "checking" : settings.data?.featureReadiness.voiceConfigured ? "ready" : "missing"}
-            </Text>
-            {lastVoiceErrorCode ? <Text style={styles.voiceError}>Last error: {lastVoiceErrorCode}</Text> : null}
-            {settings.data?.featureReadiness.voiceUnavailableReason ? (
-              <Text style={styles.voiceError}>{settings.data.featureReadiness.voiceUnavailableReason}</Text>
-            ) : null}
+          <View style={styles.readinessCard}>
+            <ReadinessPill ready={isReady} />
           </View>
 
-          {setupStep ? (
-            <View style={styles.setupCard}>
-              <View style={styles.quickActionHeader}>
-                <Ionicons name="construct-outline" size={18} color={colors.primary} />
-                <Text style={styles.quickActionTitle}>Finish setup</Text>
-              </View>
-              <Text style={styles.quickActionBody}>
-                {setupStep === "BUSINESS_PROFILE"
-                  ? "Add your business name in settings so Aura can finish setup."
-                  : setupStep === "PHONE_NUMBER"
-                    ? "Your business phone number still needs to be connected."
-                    : "Create a voicemail greeting to complete setup."}
-              </Text>
+          <Pressable style={styles.quickActionCard} onPress={() => navigation.navigate("Mailbox")}>
+            <View style={styles.quickActionHeader}>
+              <Ionicons name="mail-open-outline" size={18} color={colors.voicemail} />
+              <Text style={styles.quickActionTitle}>Mailbox</Text>
             </View>
-          ) : null}
-
-          {historySync.data?.state === "syncing" ? (
-            <View style={styles.syncBanner}>
-              <ActivityIndicator size="small" color={colors.primary} />
-              <Text style={styles.syncBannerText}>Importing historical calls and voicemails in the background.</Text>
-            </View>
-          ) : null}
-
-          <View style={styles.quickActionsRow}>
-            <Pressable style={styles.quickActionCard} onPress={() => navigation.navigate("Mailbox")}>
-              <View style={styles.quickActionHeader}>
-                <Ionicons name="mail-open-outline" size={18} color={colors.voicemail} />
-                <Text style={styles.quickActionTitle}>Mailbox</Text>
-              </View>
-              <Text style={styles.quickActionBody}>
-                {unheardCount > 0 ? `${unheardCount} unheard voicemail${unheardCount === 1 ? "" : "s"}` : "Open voicemail inbox"}
-              </Text>
-            </Pressable>
-
-            <View style={styles.quickActionCard}>
-              <View style={styles.quickActionHeader}>
-                <Ionicons name="pulse-outline" size={18} color={colors.primary} />
-                <Text style={styles.quickActionTitle}>Recent status</Text>
-              </View>
-              <Text style={styles.quickActionBody}>{voiceRegistrationState === "ready" ? "This device can place and receive calls." : "Calling is still settling."}</Text>
-            </View>
-          </View>
+            <Text style={styles.quickActionBody}>
+              {unheardCount > 0 ? `${unheardCount} unheard voicemail${unheardCount === 1 ? "" : "s"}` : "Open voicemail inbox"}
+            </Text>
+          </Pressable>
 
           <View style={styles.dialCard}>
             <Text style={styles.sectionTitle}>Place a call</Text>
@@ -352,71 +246,14 @@ const styles = StyleSheet.create({
     color: colors.muted,
     lineHeight: 20,
   },
-  voiceCard: {
-    borderRadius: 20,
-    padding: 16,
-    gap: 8,
-  },
-  voiceCardInfo: {
-    backgroundColor: "#dbeafe",
-  },
-  voiceCardSuccess: {
-    backgroundColor: "#dcfce7",
-  },
-  voiceCardDanger: {
-    backgroundColor: "#fee2e2",
-  },
-  voiceHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  voiceTitle: {
-    color: colors.text,
-    fontWeight: "800",
-    fontSize: 16,
-  },
-  voiceDescription: {
-    color: colors.text,
-    lineHeight: 20,
-  },
-  voiceMeta: {
-    color: colors.muted,
-    fontSize: 13,
-  },
-  voiceError: {
-    color: colors.danger,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  syncBanner: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  syncBannerText: {
-    color: colors.text,
-    flex: 1,
-  },
-  setupCard: {
+  readinessCard: {
     backgroundColor: colors.surface,
     borderRadius: 18,
     padding: 14,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: 8,
-  },
-  quickActionsRow: {
-    flexDirection: "row",
-    gap: 12,
   },
   quickActionCard: {
-    flex: 1,
     backgroundColor: colors.surface,
     borderRadius: 18,
     padding: 14,

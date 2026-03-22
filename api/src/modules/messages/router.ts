@@ -4,6 +4,7 @@ import { IdempotencyOperation, MessageDeliveryStatus, ThreadItemType, UnreadStat
 import { claimIdempotency, resolveIdempotency } from "../../lib/idempotency.js";
 import { hashRequestBody } from "../../lib/hash.js";
 import { AppError, sendAppError } from "../../lib/errors.js";
+import { requireApiBaseUrl } from "../../lib/env.js";
 import { normalizeToE164 } from "../../lib/phone.js";
 import { requireBusiness, requireUser } from "../../middleware/auth.js";
 import { getPrimaryPhoneNumberForBusiness } from "../phoneNumbers/service.js";
@@ -130,11 +131,13 @@ messagesRouter.post("/", requireUser, requireBusiness, async (req, res) => {
 
     try {
       ensureTwilioMessagingConfigured();
+      const statusCallback = new URL(`${requireApiBaseUrl()}/webhooks/twilio/sms/status`);
       const created = await twilioClient!.messages.create({
         from: phoneNumber.e164,
         to,
         body: input.body,
         mediaUrl: input.mediaUrls,
+        statusCallback: statusCallback.toString(),
       });
       const updated = await prisma.message.update({
         where: { id: message.id },

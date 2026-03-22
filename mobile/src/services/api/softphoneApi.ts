@@ -41,6 +41,115 @@ export type ThreadsPayload = {
   nextCursor: string | null;
 };
 
+export type MessagePayload = {
+  id: string;
+  businessId: string;
+  phoneNumberId: string;
+  threadId: string;
+  externalParticipantE164: string;
+  direction: "INBOUND" | "OUTBOUND";
+  messageSid: string | null;
+  body: string;
+  mediaUrls: string[];
+  deliveryStatus: "PENDING" | "QUEUED" | "SENT" | "DELIVERED" | "FAILED";
+  errorCode: string | null;
+  providerStatus: string | null;
+  clientTempId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CallEventPayload = {
+  id: string;
+  businessId: string;
+  phoneNumberId: string;
+  threadId: string;
+  externalParticipantE164: string;
+  eventType: "MISSED_CALL" | "CALL_COMPLETED" | "CALL_DECLINED";
+  direction: "INBOUND" | "OUTBOUND";
+  callSid: string;
+  parentCallSid: string | null;
+  childCallSid: string | null;
+  providerStatus: string | null;
+  startedAt: string | null;
+  answeredAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type VoicemailPayload = {
+  id: string;
+  businessId: string;
+  phoneNumberId: string;
+  threadId: string;
+  externalParticipantE164: string;
+  callSid: string;
+  recordingSid: string | null;
+  recordingUrl: string;
+  durationSeconds: number | null;
+  transcriptStatus: "NOT_REQUESTED" | "PENDING" | "COMPLETED" | "FAILED";
+  transcriptText: string | null;
+  transcriptionProviderId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ThreadPayload = {
+  thread: {
+    id: string;
+    title: string;
+    contactId: string | null;
+    totalUnreadCount: number;
+    lastOccurredAt: string;
+    externalParticipantE164: string;
+  };
+  items: Array<{
+    id: string;
+    itemType: "SMS_INBOUND" | "SMS_OUTBOUND" | "MISSED_CALL" | "VOICEMAIL" | "CALL_COMPLETED" | "CALL_DECLINED";
+    occurredAt: string;
+    unreadState: "UNREAD" | "READ" | "HEARD";
+    previewText: string | null;
+    payload: MessagePayload | CallEventPayload | VoicemailPayload | null;
+  }>;
+  nextCursor: string | null;
+};
+
+export type SettingsPayload = {
+  business: {
+    id: string;
+    displayName: string | null;
+    onboardingState: string;
+  };
+  voiceRegistrationState: string;
+  playbackDefaultsToSpeaker: boolean;
+  primaryPhoneNumber: {
+    id: string;
+    e164: string;
+    label: string | null;
+  } | null;
+  greetings: Array<{
+    id: string;
+    label: string | null;
+    mode: "TTS" | "RECORDED";
+    ttsText: string | null;
+    audioUrl: string | null;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  featureReadiness: {
+    voiceConfigured: boolean;
+    voiceUnavailableReason: string | null;
+    historySyncAvailable: boolean;
+    historySyncUnavailableReason: string | null;
+    hasPrimaryPhoneNumber: boolean;
+    missingSetupStep: "BUSINESS_PROFILE" | "PHONE_NUMBER" | "GREETING" | null;
+  };
+};
+
 export function fetchBootstrap() {
   return apiFetch<BootstrapPayload>("/api/auth/bootstrap");
 }
@@ -81,25 +190,7 @@ export type RecentCallsPayload = {
 };
 
 export function fetchThread(threadId: string) {
-  return apiFetch<{
-    thread: {
-      id: string;
-      title: string;
-      contactId: string | null;
-      totalUnreadCount: number;
-      lastOccurredAt: string;
-      externalParticipantE164: string;
-    };
-    items: Array<{
-      id: string;
-      itemType: string;
-      occurredAt: string;
-      unreadState: string;
-      previewText: string | null;
-      payload: unknown;
-    }>;
-    nextCursor: string | null;
-  }>(`/api/threads/${threadId}`);
+  return apiFetch<ThreadPayload>(`/api/threads/${threadId}`);
 }
 
 export function markThreadRead(threadId: string) {
@@ -209,38 +300,20 @@ export function updateContact(
 }
 
 export function fetchSettings() {
+  return apiFetch<SettingsPayload>("/api/settings/communication");
+}
+
+export function updateCommunicationSettings(input: { displayName?: string }) {
   return apiFetch<{
     business: {
       id: string;
       displayName: string | null;
       onboardingState: string;
     };
-    voiceRegistrationState: string;
-    playbackDefaultsToSpeaker: boolean;
-    primaryPhoneNumber: {
-      id: string;
-      e164: string;
-      label: string | null;
-    } | null;
-    greetings: Array<{
-      id: string;
-      label: string | null;
-      mode: "TTS" | "RECORDED";
-      ttsText: string | null;
-      audioUrl: string | null;
-      isActive: boolean;
-      createdAt: string;
-      updatedAt: string;
-    }>;
-    featureReadiness: {
-      voiceConfigured: boolean;
-      voiceUnavailableReason: string | null;
-      historySyncAvailable: boolean;
-      historySyncUnavailableReason: string | null;
-      hasPrimaryPhoneNumber: boolean;
-      missingSetupStep: "BUSINESS_PROFILE" | "PHONE_NUMBER" | "GREETING" | null;
-    };
-  }>("/api/settings/communication");
+  }>("/api/settings/communication", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
 }
 
 export function fetchHistorySyncStatus() {
@@ -255,6 +328,24 @@ export function startHistorySync() {
 
 export function fetchRecentCalls() {
   return apiFetch<RecentCallsPayload>("/api/calls/recent");
+}
+
+export function sendMessage(input: {
+  to: string;
+  body: string;
+  phoneNumberId?: string;
+  mediaUrls?: string[];
+  clientTempId?: string;
+}) {
+  return apiFetch<{
+    message: MessagePayload;
+  }>("/api/messages", {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": `sms-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    },
+    body: JSON.stringify(input),
+  });
 }
 
 export type CallSessionPayload = {

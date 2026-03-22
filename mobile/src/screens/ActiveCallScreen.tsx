@@ -1,39 +1,35 @@
 import React from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useCallStore } from "../store/callStore";
 import { twilioVoiceService } from "../services/twilioVoice/twilioVoiceService";
 import { colors } from "../theme/colors";
 
 export function ActiveCallScreen() {
-  const { callState, voiceRegistrationState, externalParticipantE164, callSid, lastVoiceErrorMessage } = useCallStore();
+  const { callState, externalParticipantE164 } = useCallStore();
   const isIncoming = callState === "incoming";
   const canHangUp = callState === "answering" || callState === "outgoing_dialing" || callState === "connecting" || callState === "active";
 
   return (
-    <View style={{ flex: 1, padding: 24, backgroundColor: colors.background }}>
-      <Text style={{ fontSize: 28, fontWeight: "700", color: colors.text, marginBottom: 12 }}>Active Call</Text>
-      <Text style={{ color: colors.text, marginBottom: 8 }}>Call state: {callState}</Text>
-      <Text style={{ color: colors.muted, marginBottom: 8 }}>Voice readiness: {voiceRegistrationState}</Text>
-      <Text style={{ color: colors.muted, marginBottom: 8 }}>Participant: {externalParticipantE164 ?? "unknown"}</Text>
-      <Text style={{ color: colors.muted, marginBottom: 16 }}>Call SID: {callSid ?? "pending"}</Text>
-      {lastVoiceErrorMessage ? <Text style={{ color: "#b42318", marginBottom: 16 }}>{lastVoiceErrorMessage}</Text> : null}
+    <View style={styles.screen}>
+      <Text style={styles.title}>{isIncoming ? "Incoming call" : "Call in progress"}</Text>
+      <Text style={styles.participant}>{externalParticipantE164 ?? "Unknown caller"}</Text>
       {isIncoming ? (
         <>
           <Pressable
             onPress={() => {
               void twilioVoiceService.acceptIncomingCall();
             }}
-            style={{ backgroundColor: colors.primary, borderRadius: 16, padding: 16, marginBottom: 12 }}
+            style={[styles.button, styles.answerButton]}
           >
-            <Text style={{ color: "#fff", fontWeight: "700", textAlign: "center" }}>Answer</Text>
+            <Text style={styles.buttonLabel}>Answer</Text>
           </Pressable>
           <Pressable
             onPress={() => {
               void twilioVoiceService.rejectIncomingCall();
             }}
-            style={{ backgroundColor: "#344054", borderRadius: 16, padding: 16 }}
+            style={[styles.button, styles.secondaryButton]}
           >
-            <Text style={{ color: "#fff", fontWeight: "700", textAlign: "center" }}>Decline</Text>
+            <Text style={styles.buttonLabel}>Decline</Text>
           </Pressable>
         </>
       ) : null}
@@ -42,11 +38,49 @@ export function ActiveCallScreen() {
           onPress={() => {
             void twilioVoiceService.disconnectActiveCall();
           }}
-          style={{ backgroundColor: "#b42318", borderRadius: 16, padding: 16 }}
+          style={[styles.button, styles.hangupButton]}
         >
-          <Text style={{ color: "#fff", fontWeight: "700", textAlign: "center" }}>Hang Up</Text>
+          <Text style={styles.buttonLabel}>Hang up</Text>
         </Pressable>
       ) : null}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    padding: 24,
+    backgroundColor: colors.background,
+    justifyContent: "center",
+    gap: 12,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  participant: {
+    color: colors.muted,
+    fontSize: 18,
+    marginBottom: 12,
+  },
+  button: {
+    borderRadius: 16,
+    padding: 16,
+  },
+  answerButton: {
+    backgroundColor: colors.primary,
+  },
+  secondaryButton: {
+    backgroundColor: "#344054",
+  },
+  hangupButton: {
+    backgroundColor: "#b42318",
+  },
+  buttonLabel: {
+    color: colors.surface,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+});

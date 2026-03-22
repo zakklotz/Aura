@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -7,74 +7,38 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useClerk } from "@clerk/expo";
-import { useQuery } from "@tanstack/react-query";
-import { fetchHistorySyncStatus, fetchSettings, startHistorySync } from "../services/api/softphoneApi";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  fetchSettings,
+  type BootstrapPayload,
+  type SettingsPayload,
+  updateCommunicationSettings,
+} from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { useCallStore } from "../store/callStore";
 import { colors } from "../theme/colors";
 import { formatTimestamp } from "../lib/formatters";
 import { BrandedEmptyState } from "../components/BrandedEmptyState";
 import { ApiError } from "../services/api/client";
+import { ReadinessPill } from "../components/ReadinessPill";
 
 const heroImage = require("../../assets/approved-original-1024.png");
 
-function voiceSummary(input: {
-  voiceRegistrationState: "ready" | "degraded" | "registering";
-  callState: string;
-  lastVoiceErrorMessage: string | null;
-}) {
-  if (input.callState === "active") {
-    return {
-      title: "A call is live right now",
-      description: "This device is currently connected to an active call session.",
-      tone: "success" as const,
-    };
-  }
-
-  if (input.voiceRegistrationState === "ready") {
-    return {
-      title: "Voice is ready",
-      description: "Incoming and outgoing calling are registered on this device.",
-      tone: "success" as const,
-    };
-  }
-
-  if (input.voiceRegistrationState === "degraded") {
-    return {
-      title: "Voice is degraded",
-      description: input.lastVoiceErrorMessage ?? "This device can still use the app, but Twilio voice needs attention.",
-      tone: "danger" as const,
-    };
-  }
-
-  return {
-    title: "Voice is still settling",
-    description: "Aura is finishing device recovery and voice registration in the background.",
-    tone: "info" as const,
-  };
-}
-
 export function SettingsScreen() {
   const { signOut } = useClerk();
-  const { callState, voiceRegistrationState, lastVoiceErrorCode, lastVoiceErrorMessage } = useCallStore();
+  const queryClient = useQueryClient();
+  const { voiceRegistrationState } = useCallStore();
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const [isStartingSync, setIsStartingSync] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [isSavingName, setIsSavingName] = useState(false);
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const settingsQuery = useQuery({ queryKey: queryKeys.settings, queryFn: fetchSettings });
-  const historySyncQuery = useQuery({ queryKey: queryKeys.historySync, queryFn: fetchHistorySyncStatus });
-
-  const voiceCard = useMemo(
-    () =>
-      voiceSummary({
-        voiceRegistrationState,
-        callState,
-        lastVoiceErrorMessage,
-      }),
-    [callState, lastVoiceErrorMessage, voiceRegistrationState]
-  );
 
   async function handleSignOut() {
     try {
@@ -85,25 +49,75 @@ export function SettingsScreen() {
     }
   }
 
-  async function handleStartSync() {
+  async function handleSaveName() {
+    const nextName = draftName.trim();
+    if (!nextName) {
+      setSaveErrorMessage("Business name can't be blank.");
+      return;
+    }
+
     try {
-      setIsStartingSync(true);
-      await startHistorySync();
-      await historySyncQuery.refetch();
+      setIsSavingName(true);
+      setSaveErrorMessage(null);
+      const result = await updateCommunicationSettings({ displayName: nextName });
+      queryClient.setQueryData<SettingsPayload | undefined>(queryKeys.settings, (current) =>
+        current
+          ? {
+              ...current,
+              business: {
+                ...current.business,
+                displayName: result.business.displayName,
+                onboardingState: result.business.onboardingState,
+              },
+            }
+          : current
+      );
+      queryClient.setQueryData<BootstrapPayload | undefined>(queryKeys.bootstrap, (current) =>
+        current && current.business
+          ? {
+              ...current,
+              business: {
+                ...current.business,
+                displayName: result.business.displayName,
+                onboardingState: result.business.onboardingState,
+              },
+            }
+          : current
+      );
+      setDraftName(result.business.displayName ?? "");
+      setIsEditingName(false);
+      await Promise.all([
+        settingsQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.bootstrap }),
+      ]);
+    } catch (error) {
+      setSaveErrorMessage(
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Aura couldn't save your business name."
+      );
     } finally {
-      setIsStartingSync(false);
+      setIsSavingName(false);
     }
   }
 
   const data = settingsQuery.data;
+  const isReady =
+    data != null &&
+    voiceRegistrationState === "ready" &&
+    data.featureReadiness.voiceConfigured &&
+    data.featureReadiness.hasPrimaryPhoneNumber;
   const settingsErrorMessage =
     settingsQuery.error instanceof ApiError || settingsQuery.error instanceof Error
       ? settingsQuery.error.message
       : null;
-  const historySyncErrorMessage =
-    historySyncQuery.error instanceof ApiError || historySyncQuery.error instanceof Error
-      ? historySyncQuery.error.message
-      : null;
+
+  useEffect(() => {
+    if (!isEditingName) {
+      setDraftName(data?.business.displayName ?? "");
+      setSaveErrorMessage(null);
+    }
+  }, [data?.business.displayName, isEditingName]);
 
   return (
     <ScrollView
@@ -111,9 +125,9 @@ export function SettingsScreen() {
       contentContainerStyle={styles.content}
       refreshControl={
         <RefreshControl
-          refreshing={settingsQuery.isRefetching || historySyncQuery.isRefetching}
+          refreshing={settingsQuery.isRefetching}
           onRefresh={() => {
-            void Promise.all([settingsQuery.refetch(), historySyncQuery.refetch()]);
+            void settingsQuery.refetch();
           }}
           tintColor={colors.primary}
         />
@@ -125,7 +139,7 @@ export function SettingsScreen() {
           <Text style={styles.heroEyebrow}>Aura</Text>
           <Text style={styles.heroTitle}>Settings</Text>
           <Text style={styles.heroDescription}>
-            See your business number, active greeting, sync status, and current voice readiness in one place.
+            See your business name, phone number, voicemail greeting, and readiness in one place.
           </Text>
         </View>
       </View>
@@ -143,7 +157,7 @@ export function SettingsScreen() {
           description={settingsErrorMessage}
           actionLabel="Try again"
           onActionPress={() => {
-            void Promise.all([settingsQuery.refetch(), historySyncQuery.refetch()]);
+            void settingsQuery.refetch();
           }}
         />
       ) : null}
@@ -156,8 +170,51 @@ export function SettingsScreen() {
               <Text style={styles.sectionTitle}>Business</Text>
             </View>
             <View style={styles.row}>
-              <Text style={styles.rowLabel}>Name</Text>
-              <Text style={styles.rowValue}>{data.business.displayName ?? "Business name not set"}</Text>
+              <View style={styles.rowHeader}>
+                <Text style={styles.rowLabel}>Name</Text>
+                {!isEditingName ? (
+                  <Pressable onPress={() => setIsEditingName(true)} style={styles.editButton}>
+                    <Text style={styles.editButtonLabel}>Edit</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              {isEditingName ? (
+                <>
+                  <TextInput
+                    value={draftName}
+                    onChangeText={setDraftName}
+                    placeholder="Business name"
+                    placeholderTextColor={colors.muted}
+                    style={styles.nameInput}
+                  />
+                  <View style={styles.nameActions}>
+                    <Pressable
+                      onPress={handleSaveName}
+                      style={[styles.nameActionButton, styles.primaryActionButton]}
+                      disabled={isSavingName}
+                    >
+                      {isSavingName ? (
+                        <ActivityIndicator size="small" color={colors.surface} />
+                      ) : (
+                        <Text style={styles.primaryActionButtonLabel}>Save</Text>
+                      )}
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setIsEditingName(false);
+                        setDraftName(data.business.displayName ?? "");
+                      }}
+                      style={[styles.nameActionButton, styles.secondaryActionButton]}
+                      disabled={isSavingName}
+                    >
+                      <Text style={styles.secondaryActionButtonLabel}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                  {saveErrorMessage ? <Text style={styles.inlineError}>{saveErrorMessage}</Text> : null}
+                </>
+              ) : (
+                <Text style={styles.rowValue}>{data.business.displayName ?? "Business name not set"}</Text>
+              )}
             </View>
             <View style={styles.row}>
               <Text style={styles.rowLabel}>Setup state</Text>
@@ -209,88 +266,15 @@ export function SettingsScreen() {
                   {data.greetings.length ? "Voicemail greeting exists" : "Voicemail greeting still needs to be created"}
                 </Text>
               </View>
-              {data.featureReadiness.voiceUnavailableReason ? (
-                <Text style={styles.statusError}>{data.featureReadiness.voiceUnavailableReason}</Text>
-              ) : null}
             </View>
           ) : null}
 
-          <View
-            style={[
-              styles.sectionCard,
-              voiceCard.tone === "danger"
-                ? styles.statusDanger
-                : voiceCard.tone === "success"
-                  ? styles.statusSuccess
-                  : styles.statusInfo,
-            ]}
-          >
-            <View style={styles.sectionHeader}>
-              <Ionicons
-                name={voiceCard.tone === "success" ? "checkmark-circle" : voiceCard.tone === "danger" ? "warning" : "sync"}
-                size={18}
-                color={voiceCard.tone === "danger" ? colors.danger : voiceCard.tone === "success" ? colors.success : colors.primary}
-              />
-              <Text style={styles.sectionTitle}>{voiceCard.title}</Text>
-            </View>
-            <Text style={styles.statusDescription}>{voiceCard.description}</Text>
-            <Text style={styles.statusMeta}>
-              Device status: {voiceRegistrationState} • Call state: {callState}
-            </Text>
-            <Text style={styles.statusMeta}>
-              Server voice config: {data.featureReadiness.voiceConfigured ? "ready" : "missing"}
-            </Text>
-            {lastVoiceErrorCode ? <Text style={styles.statusError}>Last error: {lastVoiceErrorCode}</Text> : null}
-            {data.featureReadiness.voiceUnavailableReason ? <Text style={styles.statusError}>{data.featureReadiness.voiceUnavailableReason}</Text> : null}
-            <Text style={styles.statusMeta}>
-              Playback defaults to speaker: {data.playbackDefaultsToSpeaker ? "Yes" : "No"}
-            </Text>
-          </View>
-
           <View style={styles.sectionCard}>
             <View style={styles.sectionHeader}>
-              <Ionicons name="cloud-download-outline" size={18} color={colors.primary} />
-              <Text style={styles.sectionTitle}>History sync</Text>
+              <Ionicons name="call-outline" size={18} color={colors.primary} />
+              <Text style={styles.sectionTitle}>Phone</Text>
             </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Status</Text>
-              <Text style={styles.rowValue}>{historySyncQuery.data?.state ?? "idle"}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Last import</Text>
-              <Text style={styles.rowValue}>
-                {historySyncQuery.data?.lastSuccessfulSyncAt
-                  ? formatTimestamp(historySyncQuery.data.lastSuccessfulSyncAt)
-                  : "No completed sync yet"}
-              </Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Imported totals</Text>
-              <Text style={styles.rowValue}>
-                {historySyncQuery.data
-                  ? `${historySyncQuery.data.importedMessages} texts • ${historySyncQuery.data.importedCalls} calls • ${historySyncQuery.data.importedVoicemails} voicemails`
-                  : "No sync data yet"}
-              </Text>
-            </View>
-            {historySyncQuery.data?.errorMessage ? (
-              <Text style={styles.statusError}>{historySyncQuery.data.errorMessage}</Text>
-            ) : null}
-            {historySyncErrorMessage ? <Text style={styles.statusError}>{historySyncErrorMessage}</Text> : null}
-            {data.featureReadiness.historySyncUnavailableReason ? (
-              <Text style={styles.statusError}>{data.featureReadiness.historySyncUnavailableReason}</Text>
-            ) : null}
-            {historySyncQuery.data?.isSyncAvailable ? (
-              <Pressable onPress={handleStartSync} style={styles.syncButton} disabled={isStartingSync || historySyncQuery.data.state === "syncing"}>
-                {isStartingSync || historySyncQuery.data.state === "syncing" ? (
-                  <ActivityIndicator size="small" color={colors.surface} />
-                ) : (
-                  <>
-                    <Ionicons name="cloud-download-outline" size={18} color={colors.surface} />
-                    <Text style={styles.syncButtonLabel}>Sync now</Text>
-                  </>
-                )}
-              </Pressable>
-            ) : null}
+            <ReadinessPill ready={isReady} />
           </View>
 
           <View style={styles.sectionCard}>
@@ -408,6 +392,12 @@ const styles = StyleSheet.create({
   row: {
     gap: 4,
   },
+  rowHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
   rowLabel: {
     color: colors.muted,
     fontSize: 12,
@@ -420,6 +410,56 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  editButton: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#eff6ff",
+  },
+  editButtonLabel: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  nameInput: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#fbfbfc",
+    paddingHorizontal: 14,
+    color: colors.text,
+    fontSize: 16,
+  },
+  nameActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  nameActionButton: {
+    minHeight: 42,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryActionButton: {
+    backgroundColor: colors.primary,
+  },
+  primaryActionButtonLabel: {
+    color: colors.surface,
+    fontWeight: "800",
+  },
+  secondaryActionButton: {
+    backgroundColor: "#eef2f7",
+  },
+  secondaryActionButtonLabel: {
+    color: colors.text,
+    fontWeight: "700",
+  },
+  inlineError: {
+    color: colors.danger,
+    fontWeight: "600",
+  },
   checklistRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -429,23 +469,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     flex: 1,
     lineHeight: 20,
-  },
-  statusInfo: {
-    backgroundColor: "#dbeafe",
-  },
-  statusSuccess: {
-    backgroundColor: "#dcfce7",
-  },
-  statusDanger: {
-    backgroundColor: "#fee2e2",
-  },
-  statusDescription: {
-    color: colors.text,
-    lineHeight: 20,
-  },
-  statusMeta: {
-    color: colors.muted,
-    fontSize: 13,
   },
   statusError: {
     color: colors.danger,
@@ -493,19 +516,6 @@ const styles = StyleSheet.create({
   emptyCopy: {
     color: colors.muted,
     lineHeight: 20,
-  },
-  syncButton: {
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-  },
-  syncButtonLabel: {
-    color: colors.surface,
-    fontWeight: "800",
   },
   signOutButton: {
     minHeight: 52,

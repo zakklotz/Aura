@@ -1,46 +1,38 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { fetchThread, markThreadRead } from "../services/api/softphoneApi";
+import { fetchThread, markThreadRead, sendMessage } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import type { RootStackParamList } from "../navigation/types";
 import { colors } from "../theme/colors";
 import { formatDuration, formatTimestamp } from "../lib/formatters";
 import { BrandedEmptyState } from "../components/BrandedEmptyState";
-
-type ThreadItemPayload =
-  | {
-      body?: string | null;
-      direction?: "INBOUND" | "OUTBOUND";
-      deliveryStatus?: string | null;
-      providerStatus?: string | null;
-      errorCode?: string | null;
-    }
-  | {
-      eventType?: "MISSED_CALL" | "CALL_COMPLETED" | "CALL_DECLINED";
-      direction?: "INBOUND" | "OUTBOUND";
-      durationSeconds?: number | null;
-      providerStatus?: string | null;
-      errorCode?: string | null;
-    }
-  | {
-      durationSeconds?: number | null;
-      transcriptStatus?: string | null;
-      transcriptText?: string | null;
-      recordingUrl?: string | null;
-    }
-  | null;
+import {
+  applySendResult,
+  canRetryMessage,
+  getDisplayConversationItems,
+  getMessageBody,
+  getMessageStateLabel,
+  insertOptimisticMessage,
+  markSendFailed,
+  markThreadReadOptimistically,
+  type ConversationItem,
+} from "../services/messages/threadState";
 
 function callCopy(eventType: string | undefined) {
   switch (eventType) {
@@ -65,28 +57,31 @@ function callCopy(eventType: string | undefined) {
   }
 }
 
+function createClientTempId() {
+  return `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function ThreadDetailScreen() {
   const route = useRoute<RouteProp<RootStackParamList, "ThreadDetail">>();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
   const threadId = route.params.threadId;
+  const [composerValue, setComposerValue] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const hasMarkedReadRef = useRef<string | null>(null);
+
   const query = useQuery({
     queryKey: queryKeys.thread(threadId),
     queryFn: () => fetchThread(threadId),
   });
 
-  useEffect(() => {
-    markThreadRead(threadId)
-      .then(() =>
-        Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.threads }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.thread(threadId) }),
-        ])
-      )
-      .catch(() => undefined);
-  }, [queryClient, threadId]);
-
   const thread = query.data?.thread;
+  const items = useMemo(
+    () => getDisplayConversationItems((query.data?.items ?? []) as ConversationItem[]),
+    [query.data?.items]
+  );
+  const isInitialLoading = query.isLoading && items.length === 0;
   const showSaveContactButton = Boolean(thread && !thread.contactId && thread.externalParticipantE164);
 
   const threadSubtitle = useMemo(() => {
@@ -97,156 +92,238 @@ export function ThreadDetailScreen() {
     return thread.contactId ? thread.externalParticipantE164 : `${thread.externalParticipantE164} • Unknown contact`;
   }, [route.params.title, thread]);
 
-  return (
-    <FlatList
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      data={query.data?.items ?? []}
-      keyExtractor={(item) => item.id}
-      refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => void query.refetch()} tintColor={colors.primary} />}
-      renderItem={({ item }) => {
-        const payload = (item.payload as ThreadItemPayload) ?? null;
+  useEffect(() => {
+    hasMarkedReadRef.current = null;
+  }, [threadId]);
 
-        if (item.itemType === "SMS_INBOUND" || item.itemType === "SMS_OUTBOUND") {
-          const isInbound = item.itemType === "SMS_INBOUND";
-          return (
-            <View style={[styles.messageRow, isInbound ? styles.messageRowInbound : styles.messageRowOutbound]}>
-              <View style={[styles.messageBubble, isInbound ? styles.messageBubbleInbound : styles.messageBubbleOutbound]}>
-                <Text style={[styles.messageLabel, isInbound ? styles.messageLabelInbound : styles.messageLabelOutbound]}>
-                  {isInbound ? "Text from caller" : "Text from your business"}
-                </Text>
-                <Text style={[styles.messageBody, isInbound ? styles.messageBodyInbound : styles.messageBodyOutbound]}>
-                  {typeof payload === "object" && payload && "body" in payload && payload.body ? payload.body : item.previewText ?? "No message body"}
-                </Text>
-                <Text style={[styles.messageMeta, isInbound ? styles.messageMetaInbound : styles.messageMetaOutbound]}>
-                  {formatTimestamp(item.occurredAt)}
-                  {typeof payload === "object" && payload && "deliveryStatus" in payload && payload.deliveryStatus
-                    ? ` • ${payload.deliveryStatus.toLowerCase()}`
-                    : ""}
+  useEffect(() => {
+    if (!query.data || hasMarkedReadRef.current === threadId) {
+      return;
+    }
+
+    hasMarkedReadRef.current = threadId;
+    markThreadReadOptimistically(queryClient, threadId);
+    void markThreadRead(threadId).catch(() => {
+      hasMarkedReadRef.current = null;
+      void Promise.all([
+        query.refetch(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.threads }),
+      ]);
+    });
+  }, [query.data, query.refetch, queryClient, threadId]);
+
+  async function submitMessage(body: string) {
+    const trimmedBody = body.trim();
+    if (!trimmedBody || !thread || isSending) {
+      return;
+    }
+
+    const clientTempId = createClientTempId();
+    const occurredAt = new Date().toISOString();
+    insertOptimisticMessage(queryClient, {
+      threadId,
+      threadTitle: thread.title,
+      externalParticipantE164: thread.externalParticipantE164,
+      body: trimmedBody,
+      occurredAt,
+      clientTempId,
+    });
+    setComposerValue("");
+    setIsSending(true);
+
+    try {
+      const response = await sendMessage({
+        to: thread.externalParticipantE164,
+        body: trimmedBody,
+        clientTempId,
+      });
+      applySendResult(queryClient, threadId, clientTempId, response.message);
+    } catch (error) {
+      markSendFailed(queryClient, threadId, clientTempId, "Couldn't send");
+    } finally {
+      setIsSending(false);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.thread(threadId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.threads }),
+      ]);
+    }
+  }
+
+  function handleRetry(item: ConversationItem) {
+    const retryBody = getMessageBody(item).trim();
+    if (!retryBody) {
+      return;
+    }
+
+    void submitMessage(retryBody);
+  }
+
+  return (
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.screen}>
+      <View style={styles.header}>
+        <Text style={styles.title}>{thread?.title ?? route.params.title}</Text>
+        <Text style={styles.subtitle}>{threadSubtitle}</Text>
+
+        {showSaveContactButton ? (
+          <Pressable
+            onPress={() =>
+              navigation.navigate("ContactCard", {
+                initialPhoneNumber: thread?.externalParticipantE164 ?? null,
+                initialName: thread?.title ?? null,
+              })
+            }
+            style={styles.contactButton}
+          >
+            <Ionicons name="person-add-outline" size={18} color={colors.surface} />
+            <Text style={styles.contactButtonLabel}>Save caller as contact</Text>
+          </Pressable>
+        ) : thread?.contactId ? (
+          <Pressable
+            onPress={() =>
+              navigation.navigate("ContactCard", {
+                contactId: thread.contactId,
+              })
+            }
+            style={styles.secondaryButton}
+          >
+            <Ionicons name="create-outline" size={18} color={colors.primary} />
+            <Text style={styles.secondaryButtonLabel}>Edit contact</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <FlatList
+        style={styles.list}
+        contentContainerStyle={[styles.listContent, items.length === 0 && styles.listContentEmpty]}
+        data={items}
+        inverted
+        keyExtractor={(item) => item.id}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => void query.refetch()} tintColor={colors.primary} />}
+        ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
+        renderItem={({ item }) => {
+          if (item.itemType === "SMS_INBOUND" || item.itemType === "SMS_OUTBOUND") {
+            const isInbound = item.itemType === "SMS_INBOUND";
+            const stateLabel = getMessageStateLabel(item);
+            return (
+              <View style={[styles.messageRow, isInbound ? styles.messageRowInbound : styles.messageRowOutbound]}>
+                <View style={[styles.messageBubble, isInbound ? styles.messageBubbleInbound : styles.messageBubbleOutbound]}>
+                  <Text style={[styles.messageBody, isInbound ? styles.messageBodyInbound : styles.messageBodyOutbound]}>
+                    {getMessageBody(item) || "No message body"}
+                  </Text>
+                  <Text style={[styles.messageMeta, isInbound ? styles.messageMetaInbound : styles.messageMetaOutbound]}>
+                    {formatTimestamp(item.occurredAt)}
+                    {!isInbound && stateLabel ? ` • ${stateLabel}` : ""}
+                  </Text>
+                  {!isInbound && canRetryMessage(item) ? (
+                    <Pressable onPress={() => handleRetry(item)} style={styles.retryButton}>
+                      <Text style={styles.retryButtonLabel}>Retry</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            );
+          }
+
+          if (item.itemType === "VOICEMAIL") {
+            const transcript = item.payload && "transcriptText" in item.payload ? item.payload.transcriptText : null;
+            const transcriptStatus = item.payload && "transcriptStatus" in item.payload ? item.payload.transcriptStatus : null;
+            const durationSeconds = item.payload && "durationSeconds" in item.payload ? item.payload.durationSeconds : null;
+
+            return (
+              <View style={styles.timelineCard}>
+                <View style={styles.timelineHeader}>
+                  <View style={[styles.timelineIconCircle, { backgroundColor: `${colors.voicemail}14` }]}>
+                    <Ionicons name="mail-open-outline" size={18} color={colors.voicemail} />
+                  </View>
+                  <View style={styles.timelineCopy}>
+                    <Text style={styles.timelineTitle}>Voicemail</Text>
+                    <Text style={styles.timelineMeta}>
+                      {formatTimestamp(item.occurredAt)} • {durationSeconds != null ? formatDuration(durationSeconds) : "Duration unavailable"}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.timelineBody}>
+                  {transcriptStatus === "COMPLETED"
+                    ? transcript?.trim() || "Transcript is empty."
+                    : transcriptStatus === "PENDING"
+                      ? "Transcription is still in progress."
+                      : item.previewText ?? "Voicemail saved without a transcript yet."}
                 </Text>
               </View>
-            </View>
-          );
-        }
+            );
+          }
 
-        if (item.itemType === "VOICEMAIL") {
-          const transcript =
-            typeof payload === "object" && payload && "transcriptText" in payload ? payload.transcriptText : null;
-          const transcriptStatus =
-            typeof payload === "object" && payload && "transcriptStatus" in payload ? payload.transcriptStatus : null;
-          const durationSeconds =
-            typeof payload === "object" && payload && "durationSeconds" in payload ? payload.durationSeconds : null;
+          const callEventType = item.payload && "eventType" in item.payload ? item.payload.eventType : undefined;
+          const callDirection = item.payload && "direction" in item.payload ? item.payload.direction : undefined;
+          const callDuration = item.payload && "durationSeconds" in item.payload ? item.payload.durationSeconds : null;
+          const callVisual = callCopy(callEventType);
 
           return (
             <View style={styles.timelineCard}>
               <View style={styles.timelineHeader}>
-                <View style={[styles.timelineIconCircle, { backgroundColor: `${colors.voicemail}14` }]}>
-                  <Ionicons name="mail-open-outline" size={18} color={colors.voicemail} />
+                <View style={[styles.timelineIconCircle, { backgroundColor: `${callVisual.color}14` }]}>
+                  <Ionicons name={callVisual.icon} size={18} color={callVisual.color} />
                 </View>
                 <View style={styles.timelineCopy}>
-                  <Text style={styles.timelineTitle}>Voicemail</Text>
+                  <Text style={styles.timelineTitle}>{callVisual.title}</Text>
                   <Text style={styles.timelineMeta}>
-                    {formatTimestamp(item.occurredAt)} • {durationSeconds != null ? formatDuration(durationSeconds) : "Duration unavailable"}
-                  </Text>
-                </View>
-                <View style={[styles.stateBadge, item.unreadState === "UNREAD" ? styles.stateBadgeUnread : styles.stateBadgeNeutral]}>
-                  <Text style={[styles.stateBadgeLabel, item.unreadState === "UNREAD" ? styles.stateBadgeLabelUnread : styles.stateBadgeLabelNeutral]}>
-                    {item.unreadState === "UNREAD" ? "Unheard" : "Heard"}
+                    {formatTimestamp(item.occurredAt)} • {callDirection === "INBOUND" ? "Inbound" : "Outbound"}
                   </Text>
                 </View>
               </View>
-              <Text style={styles.timelineBody}>
-                {transcriptStatus === "COMPLETED"
-                  ? transcript?.trim() || "Transcript is empty."
-                  : transcriptStatus === "PENDING"
-                    ? "Transcription is still in progress."
-                    : item.previewText ?? "Voicemail saved without a transcript yet."}
-              </Text>
+              {callDuration != null ? <Text style={styles.timelineBody}>Duration {formatDuration(callDuration)}.</Text> : null}
             </View>
           );
-        }
-
-        const callEventType =
-          typeof payload === "object" && payload && "eventType" in payload ? payload.eventType : undefined;
-        const callDirection =
-          typeof payload === "object" && payload && "direction" in payload ? payload.direction : undefined;
-        const callDuration =
-          typeof payload === "object" && payload && "durationSeconds" in payload ? payload.durationSeconds : null;
-        const callProviderStatus =
-          typeof payload === "object" && payload && "providerStatus" in payload ? payload.providerStatus : null;
-        const callErrorCode =
-          typeof payload === "object" && payload && "errorCode" in payload ? payload.errorCode : null;
-        const callVisual = callCopy(callEventType);
-
-        return (
-          <View style={styles.timelineCard}>
-            <View style={styles.timelineHeader}>
-              <View style={[styles.timelineIconCircle, { backgroundColor: `${callVisual.color}14` }]}>
-                <Ionicons name={callVisual.icon} size={18} color={callVisual.color} />
-              </View>
-              <View style={styles.timelineCopy}>
-                <Text style={styles.timelineTitle}>{callVisual.title}</Text>
-                <Text style={styles.timelineMeta}>
-                  {formatTimestamp(item.occurredAt)} • {callDirection === "INBOUND" ? "Inbound" : "Outbound"}
-                </Text>
-              </View>
+        }}
+        ListEmptyComponent={
+          isInitialLoading ? (
+            <View style={styles.loadingState}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingTitle}>Loading thread</Text>
+              <Text style={styles.loadingDescription}>Pulling the full communication timeline now.</Text>
             </View>
-            <Text style={styles.timelineBody}>
-              {callDuration != null ? `Duration ${formatDuration(callDuration)}.` : ""}
-              {callProviderStatus ? ` ${callProviderStatus}.` : ""}
-              {callErrorCode ? ` Error ${callErrorCode}.` : ""}
-            </Text>
-          </View>
-        );
-      }}
-      ListHeaderComponent={
-        <View style={styles.header}>
-          <Text style={styles.title}>{thread?.title ?? route.params.title}</Text>
-          <Text style={styles.subtitle}>{threadSubtitle}</Text>
+          ) : (
+            <BrandedEmptyState
+              title="No activity in this thread yet"
+              description="Texts, calls, and voicemails tied to this number will appear here."
+            />
+          )
+        }
+      />
 
-          {showSaveContactButton ? (
-            <Pressable
-              onPress={() =>
-                navigation.navigate("ContactCard", {
-                  initialPhoneNumber: thread?.externalParticipantE164 ?? null,
-                  initialName: thread?.title ?? null,
-                })
-              }
-              style={styles.contactButton}
-            >
-              <Ionicons name="person-add-outline" size={18} color={colors.surface} />
-              <Text style={styles.contactButtonLabel}>Save caller as contact</Text>
-            </Pressable>
-          ) : thread?.contactId ? (
-            <Pressable
-              onPress={() =>
-                navigation.navigate("ContactCard", {
-                  contactId: thread.contactId,
-                })
-              }
-              style={styles.secondaryButton}
-            >
-              <Ionicons name="create-outline" size={18} color={colors.primary} />
-              <Text style={styles.secondaryButtonLabel}>Edit contact</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      }
-      ListEmptyComponent={
-        query.isLoading ? (
-          <View style={styles.loadingState}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingTitle}>Loading thread</Text>
-            <Text style={styles.loadingDescription}>Pulling the full communication timeline now.</Text>
-          </View>
-        ) : (
-          <BrandedEmptyState
-            title="No activity in this thread yet"
-            description="Texts, calls, and voicemails tied to this number will appear here."
+      <View style={[styles.composerShell, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View style={styles.composerCard}>
+          <TextInput
+            value={composerValue}
+            onChangeText={setComposerValue}
+            placeholder="Type a message"
+            placeholderTextColor={colors.muted}
+            style={styles.composerInput}
+            multiline
+            maxLength={1600}
           />
-        )
-      }
-    />
+          <Pressable
+            onPress={() => void submitMessage(composerValue)}
+            disabled={!composerValue.trim() || !thread || isSending}
+            style={({ pressed }) => [
+              styles.sendButton,
+              (!composerValue.trim() || !thread || isSending) && styles.sendButtonDisabled,
+              pressed && composerValue.trim() && thread && !isSending ? styles.sendButtonPressed : null,
+            ]}
+          >
+            {isSending ? (
+              <ActivityIndicator size="small" color={colors.surface} />
+            ) : (
+              <>
+                <Ionicons name="arrow-up" size={18} color={colors.surface} />
+                <Text style={styles.sendButtonLabel}>Send</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -255,14 +332,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  content: {
-    padding: 16,
-    paddingBottom: 28,
-    gap: 12,
-  },
   header: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
     gap: 8,
-    marginBottom: 8,
   },
   title: {
     color: colors.text,
@@ -303,6 +377,21 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: "800",
   },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  listContentEmpty: {
+    flexGrow: 1,
+    justifyContent: "center",
+  },
+  itemSeparator: {
+    height: 12,
+  },
   messageRow: {
     flexDirection: "row",
   },
@@ -317,7 +406,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    gap: 6,
+    gap: 8,
   },
   messageBubbleInbound: {
     backgroundColor: colors.surface,
@@ -328,18 +417,6 @@ const styles = StyleSheet.create({
   messageBubbleOutbound: {
     backgroundColor: colors.primary,
     borderTopRightRadius: 8,
-  },
-  messageLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  messageLabelInbound: {
-    color: colors.sms,
-  },
-  messageLabelOutbound: {
-    color: "#dbeafe",
   },
   messageBody: {
     fontSize: 16,
@@ -359,6 +436,18 @@ const styles = StyleSheet.create({
   },
   messageMetaOutbound: {
     color: "#dbeafe",
+  },
+  retryButton: {
+    alignSelf: "flex-end",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  retryButtonLabel: {
+    color: colors.surface,
+    fontSize: 12,
+    fontWeight: "800",
   },
   timelineCard: {
     backgroundColor: colors.surface,
@@ -397,41 +486,62 @@ const styles = StyleSheet.create({
     color: colors.text,
     lineHeight: 21,
   },
-  stateBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  stateBadgeUnread: {
-    backgroundColor: "#ede9fe",
-  },
-  stateBadgeNeutral: {
-    backgroundColor: "#eef2f7",
-  },
-  stateBadgeLabel: {
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  stateBadgeLabelUnread: {
-    color: colors.voicemail,
-  },
-  stateBadgeLabelNeutral: {
-    color: colors.muted,
-  },
   loadingState: {
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 64,
     gap: 10,
+    paddingVertical: 28,
   },
   loadingTitle: {
     color: colors.text,
     fontWeight: "700",
-    fontSize: 16,
   },
   loadingDescription: {
     color: colors.muted,
     textAlign: "center",
-    lineHeight: 20,
+  },
+  composerShell: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    backgroundColor: colors.background,
+  },
+  composerCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+  },
+  composerInput: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 120,
+    color: colors.text,
+    fontSize: 16,
+    paddingHorizontal: 4,
+    paddingTop: 10,
+    paddingBottom: 10,
+  },
+  sendButton: {
+    minHeight: 44,
+    borderRadius: 14,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  sendButtonDisabled: {
+    opacity: 0.5,
+  },
+  sendButtonPressed: {
+    opacity: 0.9,
+  },
+  sendButtonLabel: {
+    color: colors.surface,
+    fontWeight: "800",
   },
 });

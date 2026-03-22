@@ -14,9 +14,13 @@ import { SocketBootstrap } from "./src/components/SocketBootstrap";
 import { VoiceBootstrap } from "./src/components/VoiceBootstrap";
 import { CallNavigationController } from "./src/components/CallNavigationController";
 import { HistorySyncBootstrap } from "./src/components/HistorySyncBootstrap";
+import { CommunicationCacheBootstrap } from "./src/components/CommunicationCacheBootstrap";
 import { colors } from "./src/theme/colors";
+import { setApiTokenGetter } from "./src/services/api/authTokenBridge";
 
 const clerkPublishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
+const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? "";
+const socketUrl = process.env.EXPO_PUBLIC_SOCKET_URL ?? "";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -29,31 +33,70 @@ const queryClient = new QueryClient({
 WebBrowser.maybeCompleteAuthSession();
 
 function MissingConfig() {
+  const checks = [
+    {
+      label: "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      present: Boolean(clerkPublishableKey),
+    },
+    {
+      label: "EXPO_PUBLIC_API_URL",
+      present: Boolean(apiUrl),
+    },
+    {
+      label: "EXPO_PUBLIC_SOCKET_URL",
+      present: Boolean(socketUrl),
+    },
+  ];
+
   return (
     <View
       style={{
         flex: 1,
-        alignItems: "center",
         justifyContent: "center",
         padding: 24,
         backgroundColor: colors.background,
       }}
     >
       <Text style={{ color: colors.text, fontSize: 18, fontWeight: "600", marginBottom: 8 }}>Missing config</Text>
-      <Text style={{ color: colors.muted, textAlign: "center" }}>
-        Set `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` and `EXPO_PUBLIC_API_URL` before running the mobile app.
+      <Text style={{ color: colors.muted, marginBottom: 16 }}>
+        Temporary startup diagnostics for Expo public env values:
       </Text>
+      {checks.map((check) => (
+        <Text key={check.label} style={{ color: check.present ? colors.success : colors.danger, marginBottom: 8 }}>
+          {check.label}: {check.present ? "present" : "missing"}
+        </Text>
+      ))}
     </View>
   );
 }
 
 function AppShell() {
   const auth = useAuth();
+
+  React.useEffect(() => {
+    setApiTokenGetter(async () => {
+      if (!auth.isLoaded || !auth.isSignedIn) {
+        return null;
+      }
+
+      return (await auth.getToken()) ?? null;
+    });
+
+    return () => {
+      setApiTokenGetter(null);
+    };
+  }, [auth.getToken, auth.isLoaded, auth.isSignedIn]);
+
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
         <NavigationContainer ref={navigationRef}>
           <StatusBar style="dark" />
+          <CommunicationCacheBootstrap
+            queryClient={queryClient}
+            isSignedIn={Boolean(auth.isSignedIn)}
+            userId={auth.userId}
+          />
           <AppStateRefetcher queryClient={queryClient} />
           <SocketBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
           <VoiceBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
@@ -67,7 +110,7 @@ function AppShell() {
 }
 
 export default function App() {
-  if (!clerkPublishableKey || !process.env.EXPO_PUBLIC_API_URL) {
+  if (!clerkPublishableKey || !apiUrl) {
     return <MissingConfig />;
   }
 
