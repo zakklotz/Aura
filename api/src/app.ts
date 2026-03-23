@@ -25,6 +25,7 @@ import { setIo } from "./lib/socket.js";
 export function createApp() {
   const app = express();
   const httpServer = createServer(app);
+  app.set("trust proxy", true);
   const io = new Server(httpServer, {
     cors: {
       origin: true,

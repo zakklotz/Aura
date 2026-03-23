@@ -1,7 +1,8 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { sendAppError, AppError } from "../../lib/errors.js";
 import { validateTwilioSignature } from "../../lib/twilio.js";
+import { env, requireApiBaseUrl } from "../../lib/env.js";
 import {
   buildIncomingVoiceResponse,
   buildOutboundVoiceResponse,
@@ -22,17 +23,38 @@ import { fromDbState, upsertCallSessionTransition } from "../calls/sessionServic
 
 export const twilioRouter = Router();
 
+function firstHeaderValue(value: string | undefined): string | undefined {
+  return value?.split(",")[0]?.trim() || undefined;
+}
+
+function getTwilioValidationUrls(req: Request): string[] {
+  const forwardedProto = firstHeaderValue(req.header("x-forwarded-proto")) ?? req.protocol;
+  const forwardedHost = firstHeaderValue(req.header("x-forwarded-host")) ?? req.get("host") ?? undefined;
+  const forwardedPort = firstHeaderValue(req.header("x-forwarded-port"));
+  const normalizedHost =
+    forwardedHost && forwardedPort && !forwardedHost.includes(":") && !["80", "443"].includes(forwardedPort)
+      ? `${forwardedHost}:${forwardedPort}`
+      : forwardedHost;
+
+  const urls = new Set<string>();
+  if (normalizedHost) {
+    urls.add(`${forwardedProto}://${normalizedHost}${req.originalUrl}`);
+  }
+  urls.add(new URL(req.originalUrl, `${requireApiBaseUrl()}/`).toString());
+  return [...urls];
+}
+
 twilioRouter.use((req, _res, next) => {
   const signature = req.header("x-twilio-signature") ?? undefined;
-  const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
   const payload = req.method === "GET" ? (req.query as Record<string, string | undefined>) : (req.body as Record<string, string | undefined>);
 
-  if (process.env.NODE_ENV === "test" || !process.env.TWILIO_WEBHOOK_AUTH_TOKEN) {
+  if (process.env.NODE_ENV === "test" || !env.twilioWebhookAuthToken) {
     next();
     return;
   }
 
-  if (!validateTwilioSignature(url, signature, payload)) {
+  const isValid = getTwilioValidationUrls(req).some((url) => validateTwilioSignature(url, signature, payload));
+  if (!isValid) {
     next(new AppError(403, "forbidden", "Twilio signature validation failed"));
     return;
   }
@@ -136,6 +158,7 @@ twilioRouter.post("/voice/status", async (req, res) => {
     };
 
     if (payload.DialCallStatus && payload.DialCallStatus !== "completed" && payload.businessId && payload.phoneNumberId && payload.externalParticipantE164) {
+      await handleVoiceStatus(payload);
       const response = await buildVoicemailFallbackResponse({
         businessId: payload.businessId,
         phoneNumberId: payload.phoneNumberId,

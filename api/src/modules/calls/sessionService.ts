@@ -167,9 +167,14 @@ export function shouldEnrichEqualTimestampFailure(
 }
 
 async function findCandidateSession(input: UpsertCallSessionTransitionInput): Promise<CallSession | null> {
-  if (input.callSid) {
-    const exact = await prisma.callSession.findUnique({
-      where: { callSid: input.callSid },
+  const sidCandidates = [...new Set([input.callSid, input.parentCallSid, input.childCallSid].filter((sid): sid is string => Boolean(sid)))];
+  if (sidCandidates.length > 0) {
+    const exact = await prisma.callSession.findFirst({
+      where: {
+        businessId: input.businessId,
+        OR: sidCandidates.flatMap((sid) => [{ callSid: sid }, { parentCallSid: sid }, { childCallSid: sid }]),
+      },
+      orderBy: { updatedAt: "desc" },
     });
     if (exact) {
       return exact;

@@ -7,6 +7,7 @@ import { projectThreadItem, syncNotificationStateForBusiness } from "../threads/
 import { resolveBusinessPhoneNumberByE164 } from "../phoneNumbers/service.js";
 import { requireApiBaseUrl } from "../../lib/env.js";
 import { emitToBusiness } from "../../lib/socket.js";
+import { voiceStatusCallbackUrl } from "../../lib/twilio.js";
 import { fromDbState, upsertCallSessionTransition } from "../calls/sessionService.js";
 
 type ProviderEventInput = {
@@ -65,6 +66,92 @@ export async function resolveBusinessPhoneByIncomingNumber(toNumber: string | un
   return resolveBusinessPhoneNumberByE164(normalizeToE164(toNumber));
 }
 
+type VoiceStatusEventType = "MISSED_CALL" | "CALL_DECLINED" | "CALL_COMPLETED";
+type PersistedVoiceProgressState = "connecting" | "active";
+
+export type NormalizedVoiceStatusPayload = {
+  businessId: string | null;
+  phoneNumberId: string | null;
+  externalParticipantE164: string | null;
+  occurredAt: Date;
+  rawCallSid: string | null;
+  sessionCallSid: string | null;
+  callEventSid: string | null;
+  parentCallSid: string | null;
+  childCallSid: string | null;
+  callStatus: string | null;
+  dialCallStatus: string | null;
+  providerStatus: string | null;
+  callbackSource: string | null;
+  direction: "inbound" | "outbound" | null;
+  eventType: VoiceStatusEventType | null;
+  progressState: PersistedVoiceProgressState | null;
+};
+
+function normalizeVoiceDirection(payload: Record<string, string | undefined>): "inbound" | "outbound" | null {
+  const rawDirection = payload.Direction?.trim().toLowerCase();
+  if (rawDirection?.includes("outbound")) {
+    return "outbound";
+  }
+  if (rawDirection?.includes("inbound")) {
+    return "inbound";
+  }
+  const identity = parseIdentity(payload.From?.replace(/^client:/i, "") ?? payload.Identity);
+  return identity ? "outbound" : null;
+}
+
+function parseTwilioTimestamp(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function normalizeVoiceStatusPayload(payload: Record<string, string | undefined>): NormalizedVoiceStatusPayload {
+  const rawCallSid = payload.CallSid?.trim() ?? payload.callSid?.trim() ?? null;
+  const dialCallSid = payload.DialCallSid?.trim() ?? null;
+  const parentCallSid = payload.ParentCallSid?.trim() ?? (dialCallSid ? rawCallSid : null);
+  const childCallSid = payload.ChildCallSid?.trim() ?? dialCallSid ?? (payload.ParentCallSid?.trim() ? rawCallSid : null);
+  const sessionCallSid = parentCallSid ?? rawCallSid;
+  const callEventSid = childCallSid ?? sessionCallSid;
+  const dialCallStatus = payload.DialCallStatus?.trim().toLowerCase() || null;
+  const callStatus = payload.CallStatus?.trim().toLowerCase() || null;
+  const providerStatus = callStatus ?? dialCallStatus;
+  const callbackSource = payload.CallbackSource?.trim() || null;
+  const eventType =
+    dialCallStatus === "busy" || dialCallStatus === "no-answer" || dialCallStatus === "failed" || callStatus === "busy" || callStatus === "no-answer" || callStatus === "failed"
+      ? "MISSED_CALL"
+      : dialCallStatus === "canceled" || callStatus === "canceled"
+        ? "CALL_DECLINED"
+        : callStatus === "completed" || dialCallStatus === "completed"
+          ? "CALL_COMPLETED"
+          : null;
+  const progressState =
+    callStatus === "queued" || callStatus === "initiated" || callStatus === "ringing"
+      ? "connecting"
+      : callStatus === "in-progress"
+        ? "active"
+        : null;
+
+  return {
+    businessId: payload.businessId ?? payload.BusinessId ?? null,
+    phoneNumberId: payload.phoneNumberId ?? payload.PhoneNumberId ?? null,
+    externalParticipantE164: optionalE164(payload.externalParticipantE164 ?? payload.ExternalParticipantE164 ?? payload.From ?? payload.To),
+    occurredAt: parseTwilioTimestamp(payload.Timestamp) ?? new Date(),
+    rawCallSid,
+    sessionCallSid,
+    callEventSid,
+    parentCallSid,
+    childCallSid,
+    callStatus,
+    dialCallStatus,
+    providerStatus,
+    callbackSource,
+    direction: normalizeVoiceDirection(payload),
+    eventType,
+    progressState,
+  };
+}
+
 export function buildIncomingVoiceResponse(input: {
   businessId: string;
   phoneNumberId: string;
@@ -108,6 +195,10 @@ export function buildOutboundVoiceResponse(input: {
   actionUrl.searchParams.set("businessId", input.businessId);
   actionUrl.searchParams.set("phoneNumberId", input.phoneNumberId);
   actionUrl.searchParams.set("externalParticipantE164", input.externalParticipantE164);
+  const statusCallbackParams = new URLSearchParams();
+  statusCallbackParams.set("businessId", input.businessId);
+  statusCallbackParams.set("phoneNumberId", input.phoneNumberId);
+  statusCallbackParams.set("externalParticipantE164", input.externalParticipantE164);
 
   const dial = response.dial({
     callerId: input.callerId,
@@ -115,7 +206,14 @@ export function buildOutboundVoiceResponse(input: {
     action: actionUrl.toString(),
     method: "POST",
   });
-  dial.number(input.to);
+  dial.number(
+    {
+      statusCallback: voiceStatusCallbackUrl(statusCallbackParams),
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+      statusCallbackMethod: "POST",
+    },
+    input.to
+  );
   return response;
 }
 
@@ -283,33 +381,69 @@ export async function handleSmsStatus(payload: Record<string, string | undefined
 }
 
 export async function handleVoiceStatus(payload: Record<string, string | undefined>) {
-  const businessId = payload.businessId ?? payload.BusinessId;
-  const phoneNumberId = payload.phoneNumberId ?? payload.PhoneNumberId;
-  const externalParticipantE164 = optionalE164(payload.externalParticipantE164 ?? payload.ExternalParticipantE164 ?? payload.From ?? payload.To);
-  const callSid = payload.CallSid?.trim() ?? payload.callSid?.trim() ?? null;
+  const normalized = normalizeVoiceStatusPayload(payload);
+  const {
+    businessId,
+    phoneNumberId,
+    externalParticipantE164,
+    occurredAt,
+    rawCallSid,
+    sessionCallSid,
+    callEventSid,
+    parentCallSid,
+    childCallSid,
+    providerStatus,
+    callbackSource,
+    direction,
+    eventType,
+    progressState,
+  } = normalized;
 
-  if (!businessId || !phoneNumberId || !externalParticipantE164 || !callSid) {
+  if (!businessId || !phoneNumberId || !externalParticipantE164 || !sessionCallSid || !callEventSid) {
     throw new AppError(400, "bad_request", "Voice status payload is incomplete");
   }
-
-  const dialCallStatus = payload.DialCallStatus?.trim().toLowerCase();
-  const callStatus = (payload.CallStatus ?? payload.DialCallStatus ?? "").trim().toLowerCase();
-  const eventType =
-    dialCallStatus === "busy" || dialCallStatus === "no-answer" || dialCallStatus === "failed" || callStatus === "busy"
-      ? "MISSED_CALL"
-      : dialCallStatus === "canceled"
-        ? "CALL_DECLINED"
-        : callStatus === "completed" || dialCallStatus === "completed"
-          ? "CALL_COMPLETED"
-          : null;
 
   await recordProviderEvent({
     businessId,
     eventType: "voice.status",
-    dedupeKey: `voice-status:${callSid}:${dialCallStatus ?? callStatus}`,
+    dedupeKey: `voice-status:${sessionCallSid}:${callEventSid}:${callbackSource ?? "dial-action"}:${providerStatus ?? "unknown"}:${payload.SequenceNumber ?? "0"}`,
     rawPayload: payload,
-    callSid,
+    callSid: rawCallSid ?? callEventSid,
   });
+
+  const nextState =
+    progressState === "active"
+      ? "active"
+      : progressState === "connecting"
+        ? "connecting"
+        : eventType === "CALL_COMPLETED"
+          ? "ended"
+          : eventType
+            ? "failed"
+            : null;
+
+  if (nextState) {
+    const session = await upsertCallSessionTransition({
+      businessId,
+      state: nextState,
+      source: "webhook",
+      occurredAt,
+      callSid: sessionCallSid,
+      phoneNumberId,
+      externalParticipantE164,
+      direction,
+      parentCallSid,
+      childCallSid,
+      errorCode: eventType && eventType !== "CALL_COMPLETED" ? "CALL_CONNECT_ERROR" : null,
+      errorMessage: eventType && eventType !== "CALL_COMPLETED" ? providerStatus : null,
+    });
+    emitToBusiness(businessId, "call.state", {
+      businessId,
+      callSid: session.callSid,
+      state: fromDbState(session.state),
+      externalParticipantE164,
+    });
+  }
 
   if (!eventType) {
     return;
@@ -341,7 +475,7 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
     where: {
       businessId_callSid_eventType: {
         businessId,
-        callSid,
+        callSid: callEventSid,
         eventType,
       },
     },
@@ -351,18 +485,20 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
       threadId: thread.id,
       externalParticipantE164,
       eventType,
-      direction: (payload.Direction?.toLowerCase().includes("outbound") ? "OUTBOUND" : "INBOUND") as "INBOUND" | "OUTBOUND",
-      callSid,
-      parentCallSid: payload.ParentCallSid ?? null,
-      childCallSid: payload.ChildCallSid ?? null,
-      providerStatus: payload.CallStatus ?? payload.DialCallStatus ?? null,
-      startedAt: payload.Timestamp ? new Date(payload.Timestamp) : null,
-      endedAt: new Date(),
+      direction: (direction === "outbound" ? "OUTBOUND" : "INBOUND") as "INBOUND" | "OUTBOUND",
+      callSid: callEventSid,
+      parentCallSid,
+      childCallSid,
+      providerStatus,
+      startedAt: occurredAt,
+      endedAt: occurredAt,
       durationSeconds: payload.CallDuration ? Number(payload.CallDuration) : null,
     },
     update: {
-      providerStatus: payload.CallStatus ?? payload.DialCallStatus ?? null,
-      endedAt: new Date(),
+      providerStatus,
+      parentCallSid,
+      childCallSid,
+      endedAt: occurredAt,
       durationSeconds: payload.CallDuration ? Number(payload.CallDuration) : null,
     },
   });
@@ -383,26 +519,6 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
         : eventType === "CALL_DECLINED"
           ? "Call declined"
           : "Call completed",
-  });
-
-  const session = await upsertCallSessionTransition({
-    businessId,
-    state: eventType === "CALL_COMPLETED" ? "ended" : "failed",
-    source: "webhook",
-    occurredAt: new Date(),
-    callSid,
-    phoneNumberId,
-    externalParticipantE164,
-    direction: payload.Direction?.toLowerCase().includes("outbound") ? "outbound" : "inbound",
-    parentCallSid: payload.ParentCallSid ?? null,
-    childCallSid: payload.ChildCallSid ?? null,
-    errorCode: eventType === "CALL_COMPLETED" ? null : "CALL_CONNECT_ERROR",
-    errorMessage: eventType === "CALL_COMPLETED" ? null : payload.CallStatus ?? payload.DialCallStatus ?? null,
-  });
-  emitToBusiness(businessId, "call.state", {
-    businessId,
-    callSid: session.callSid,
-    state: fromDbState(session.state),
   });
 }
 
