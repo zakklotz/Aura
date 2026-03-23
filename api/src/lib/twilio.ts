@@ -31,6 +31,49 @@ export function createVoiceAccessToken(identity: string): string {
   return token.toJwt();
 }
 
+type DecodedVoiceAccessTokenPayload = {
+  jti?: string;
+  iat?: number;
+  exp?: number;
+  iss?: string;
+  sub?: string;
+  grants?: {
+    identity?: string;
+    voice?: {
+      incoming?: {
+        allow?: boolean;
+      };
+      outgoing?: {
+        application_sid?: string;
+      };
+      push_credential_sid?: string;
+    };
+  };
+};
+
+export function summarizeVoiceAccessToken(token: string) {
+  try {
+    const [, payloadSegment] = token.split(".");
+    if (!payloadSegment) {
+      return null;
+    }
+    const payload = JSON.parse(Buffer.from(payloadSegment, "base64url").toString("utf8")) as DecodedVoiceAccessTokenPayload;
+    return {
+      jti: payload.jti ?? null,
+      identity: payload.grants?.identity ?? null,
+      issuedAt: payload.iat ? new Date(payload.iat * 1000).toISOString() : null,
+      expiresAt: payload.exp ? new Date(payload.exp * 1000).toISOString() : null,
+      issuer: payload.iss ?? null,
+      subject: payload.sub ?? null,
+      incomingAllowed: payload.grants?.voice?.incoming?.allow ?? null,
+      outgoingApplicationSid: payload.grants?.voice?.outgoing?.application_sid ?? null,
+      pushCredentialSid: payload.grants?.voice?.push_credential_sid ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function ensureTwilioVoiceConfigured(): void {
   if (!hasTwilioVoiceConfig()) {
     throw new Error("Twilio voice configuration is incomplete");

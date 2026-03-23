@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import type { QueryClient } from "@tanstack/react-query";
 import { AudioDevice, Call, CallInvite, CallKit, Voice } from "@twilio/voice-react-native-sdk";
+import { getRecordingPermissionsAsync } from "expo-audio";
 import {
   createOutboundSession,
   fetchCallSession,
@@ -29,6 +30,95 @@ const ACTIVE_CALL_STATES = new Set(["incoming", "answering", "outgoing_dialing",
 const RECOVERY_TIMEOUT_MS = 3_000;
 const REGISTRATION_TIMEOUT_MS = 8_000;
 
+function logVoiceClient(message: string, details: Record<string, unknown>) {
+  console.info(`[twilioVoice] ${message}`, details);
+}
+
+function summarizeUnknownError(error: unknown) {
+  if (error && typeof error === "object") {
+    return {
+      name: "name" in error && typeof error.name === "string" ? error.name : null,
+      message: "message" in error && typeof error.message === "string" ? error.message : null,
+      code: "code" in error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : null,
+      domain: "domain" in error && typeof error.domain === "string" ? error.domain : null,
+      details:
+        "details" in error && error.details && typeof error.details === "object" && !Array.isArray(error.details)
+          ? error.details
+          : null,
+      userInfo:
+        "userInfo" in error && error.userInfo && typeof error.userInfo === "object" && !Array.isArray(error.userInfo)
+          ? error.userInfo
+          : null,
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      code: null,
+      domain: null,
+      details: null,
+      userInfo: null,
+    };
+  }
+  return {
+    name: null,
+    message: String(error),
+    code: null,
+    domain: null,
+    details: null,
+    userInfo: null,
+  };
+}
+
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function summarizeTokenLifecycle(hasCurrentToken: boolean) {
+  const { tokenIssuedAt, tokenExpiresAt, tokenRefreshAfter } = useCallStore.getState();
+  const now = Date.now();
+  const issuedAtMs = parseTimestamp(tokenIssuedAt);
+  const expiresAtMs = parseTimestamp(tokenExpiresAt);
+  const refreshAfterMs = parseTimestamp(tokenRefreshAfter);
+
+  return {
+    hasCurrentToken,
+    issuedAt: tokenIssuedAt,
+    expiresAt: tokenExpiresAt,
+    refreshAfter: tokenRefreshAfter,
+    tokenAgeSeconds: issuedAtMs == null ? null : Math.max(Math.floor((now - issuedAtMs) / 1000), 0),
+    tokenExpiresInSeconds: expiresAtMs == null ? null : Math.floor((expiresAtMs - now) / 1000),
+    tokenRefreshInSeconds: refreshAfterMs == null ? null : Math.floor((refreshAfterMs - now) / 1000),
+  };
+}
+
+async function readMicrophonePermissionDiagnostics() {
+  try {
+    const permission = await getRecordingPermissionsAsync();
+    return {
+      status: permission.status ?? null,
+      granted: permission.granted ?? null,
+      canAskAgain: permission.canAskAgain ?? null,
+      expires: permission.expires ?? null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      status: null,
+      granted: null,
+      canAskAgain: null,
+      expires: null,
+      error: summarizeUnknownError(error),
+    };
+  }
+}
+
 function toLocalVoiceRegistrationState(state: "READY" | "DEGRADED" | "REGISTERING" | null | undefined) {
   switch (state) {
     case "READY":
@@ -43,10 +133,14 @@ function toLocalVoiceRegistrationState(state: "READY" | "DEGRADED" | "REGISTERIN
 function normalizeTwilioError(error: unknown, fallbackCode: string): NormalizedVoiceError {
   if (error && typeof error === "object") {
     const maybeMessage = "message" in error && typeof error.message === "string" ? error.message : null;
-    const maybeCode = "code" in error && typeof error.code === "number" ? `${fallbackCode}:${error.code}` : fallbackCode;
+    const rawCode =
+      "code" in error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : null;
+    const maybeCode = rawCode ? `${fallbackCode}:${rawCode}` : fallbackCode;
+    const humanReadableMessage =
+      rawCode === "31401" ? "Microphone permission is required before Aura can place a call." : maybeMessage ?? maybeCode;
     return {
       code: fallbackCode,
-      message: maybeMessage ?? maybeCode,
+      message: humanReadableMessage,
     };
   }
 
@@ -185,11 +279,50 @@ class TwilioVoiceService {
     if (!businessId || !phoneNumberId) {
       throw new Error("No active business number is configured");
     }
+    const microphonePermission = await readMicrophonePermissionDiagnostics();
+
+    logVoiceClient("Starting outbound call", {
+      requestedTo: to,
+      businessId,
+      phoneNumberId,
+      voiceRegistrationState: useCallStore.getState().voiceRegistrationState,
+      callState: useCallStore.getState().callState,
+      tokenLifecycle: summarizeTokenLifecycle(Boolean(this.currentToken)),
+      microphonePermission,
+    });
 
     await this.ensureRegistered();
+    logVoiceClient("Device registration confirmed for outbound call", {
+      voiceRegistrationState: useCallStore.getState().voiceRegistrationState,
+      deviceId: this.currentDeviceId,
+      identity: this.currentIdentity,
+      tokenLifecycle: summarizeTokenLifecycle(Boolean(this.currentToken)),
+    });
 
     const occurredAt = new Date().toISOString();
-    const outbound = await createOutboundSession({ to, phoneNumberId });
+    let outbound;
+    try {
+      outbound = await createOutboundSession({ to, phoneNumberId });
+    } catch (error) {
+      const normalized = normalizeTwilioError(error, "CALL_CONNECT_ERROR");
+      logVoiceClient("Failed to create outbound session before Twilio connect", {
+        requestedTo: to,
+        normalized,
+        error: summarizeUnknownError(error),
+        voiceRegistrationState: useCallStore.getState().voiceRegistrationState,
+        callState: useCallStore.getState().callState,
+        tokenLifecycle: summarizeTokenLifecycle(Boolean(this.currentToken)),
+        microphonePermission,
+      });
+      useCallStore.getState().setVoiceError(normalized);
+      throw error;
+    }
+    logVoiceClient("Outbound session created via API", {
+      sessionId: outbound.sessionId,
+      externalParticipantE164: outbound.externalParticipantE164,
+      phoneNumberId: outbound.phoneNumberId,
+      sessionOccurredAt: occurredAt,
+    });
     this.resetCallControls();
     useCallStore.getState().setCallSession({
       direction: "outbound",
@@ -208,12 +341,28 @@ class TwilioVoiceService {
 
     try {
       const token = await this.ensureAccessToken();
+      logVoiceClient("Invoking Twilio Voice connect", {
+        hasToken: Boolean(token),
+        identity: this.currentIdentity,
+        tokenLifecycle: summarizeTokenLifecycle(Boolean(token)),
+        microphonePermission,
+        params: {
+          To: outbound.externalParticipantE164,
+        },
+        contactHandle: outbound.externalParticipantE164,
+      });
       const call = await this.getVoice().connect(token, {
         contactHandle: outbound.externalParticipantE164,
         notificationDisplayName: outbound.externalParticipantE164,
         params: {
           To: outbound.externalParticipantE164,
         },
+      });
+      logVoiceClient("Twilio Voice connect resolved", {
+        callSid: call.getSid() ?? null,
+        state: call.getState(),
+        to: call.getTo() ?? null,
+        from: call.getFrom() ?? null,
       });
       this.currentCall = call;
       this.attachCallListeners(call, "outbound");
@@ -236,6 +385,15 @@ class TwilioVoiceService {
       this.invalidateCallSession();
     } catch (error) {
       const normalized = normalizeTwilioError(error, "CALL_CONNECT_ERROR");
+      logVoiceClient("Twilio Voice connect failed", {
+        requestedTo: outbound.externalParticipantE164,
+        normalized,
+        error: summarizeUnknownError(error),
+        voiceRegistrationState: useCallStore.getState().voiceRegistrationState,
+        callState: useCallStore.getState().callState,
+        tokenLifecycle: summarizeTokenLifecycle(Boolean(this.currentToken)),
+        microphonePermission,
+      });
       useCallStore.getState().setVoiceError(normalized);
       useCallStore.getState().setCallState("failed");
       await postCallSessionEvent({
@@ -409,6 +567,18 @@ class TwilioVoiceService {
     this.currentPrimaryPhoneNumberId = nextPrimaryPhoneNumberId;
     this.currentIdentity = nextIdentity;
     this.currentDeviceId = nextDeviceId;
+    logVoiceClient("Bootstrapping voice context", {
+      previousBusinessId,
+      nextBusinessId,
+      previousDeviceId,
+      nextDeviceId,
+      nextPrimaryPhoneNumberId,
+      nextIdentity,
+      bootstrapVoiceRegistrationState,
+      sameVoiceContext,
+      shouldPreserveLocalReadyState,
+      tokenStillFresh,
+    });
 
     await this.ensureNativeSetup();
     await this.recoverWithTimeout();
@@ -441,6 +611,10 @@ class TwilioVoiceService {
         void this.handleIncomingInvite(callInvite);
       });
       voice.on(Voice.Event.Registered, () => {
+        logVoiceClient("Voice SDK registered", {
+          identity: this.currentIdentity,
+          deviceId: this.currentDeviceId,
+        });
         useCallStore.getState().setVoiceRegistrationState("ready");
         useCallStore.getState().setVoiceError({ code: null, message: null });
         if (!ACTIVE_CALL_STATES.has(useCallStore.getState().callState)) {
@@ -448,6 +622,10 @@ class TwilioVoiceService {
         }
       });
       voice.on(Voice.Event.Unregistered, () => {
+        logVoiceClient("Voice SDK unregistered", {
+          identity: this.currentIdentity,
+          deviceId: this.currentDeviceId,
+        });
         if (!ACTIVE_CALL_STATES.has(useCallStore.getState().callState)) {
           useCallStore.getState().setCallState("idle");
         }
@@ -457,6 +635,12 @@ class TwilioVoiceService {
       });
       voice.on(Voice.Event.Error, (error) => {
         const normalized = normalizeTwilioError(error, "VOICE_REGISTRATION_ERROR");
+        logVoiceClient("Voice SDK emitted registration error", {
+          normalized,
+          error: summarizeUnknownError(error),
+          identity: this.currentIdentity,
+          deviceId: this.currentDeviceId,
+        });
         useCallStore.getState().setVoiceRegistrationState("degraded");
         useCallStore.getState().setVoiceError(normalized);
         void this.persistDeviceState({
@@ -516,9 +700,20 @@ class TwilioVoiceService {
       voiceRegistrationState: "REGISTERING",
       twilioIdentity: this.currentIdentity,
     });
+    logVoiceClient("Registering device with Twilio", {
+      deviceId,
+      identity: this.currentIdentity,
+    });
 
     try {
       const tokenPayload = await fetchVoiceAccessToken();
+      logVoiceClient("Fetched voice access token", {
+        identity: tokenPayload.identity,
+        issuedAt: tokenPayload.issuedAt,
+        expiresAt: tokenPayload.expiresAt,
+        refreshAfter: tokenPayload.refreshAfter,
+        serverVoiceRegistrationState: tokenPayload.voiceRegistrationState,
+      });
       this.currentToken = tokenPayload.token;
       this.currentIdentity = tokenPayload.identity;
       store.setTokenLifecycle({
@@ -547,6 +742,12 @@ class TwilioVoiceService {
       this.scheduleRefresh(tokenPayload.refreshAfter);
     } catch (error) {
       const normalized = normalizeTwilioError(error, "VOICE_REGISTRATION_ERROR");
+      logVoiceClient("Device registration failed", {
+        normalized,
+        error: summarizeUnknownError(error),
+        identity: this.currentIdentity,
+        deviceId,
+      });
       store.setVoiceRegistrationState("degraded");
       store.setVoiceError(normalized);
       store.setCallState("failed");
@@ -576,6 +777,13 @@ class TwilioVoiceService {
     try {
       const previousToken = this.currentToken;
       const tokenPayload = await fetchVoiceAccessToken();
+      logVoiceClient("Refreshing voice access token", {
+        hadPreviousToken: Boolean(previousToken),
+        identity: tokenPayload.identity,
+        issuedAt: tokenPayload.issuedAt,
+        expiresAt: tokenPayload.expiresAt,
+        refreshAfter: tokenPayload.refreshAfter,
+      });
       this.currentToken = tokenPayload.token;
       this.currentIdentity = tokenPayload.identity;
       store.setTokenLifecycle({
@@ -612,6 +820,12 @@ class TwilioVoiceService {
       this.scheduleRefresh(tokenPayload.refreshAfter);
     } catch (error) {
       const normalized = normalizeTwilioError(error, "VOICE_TOKEN_ERROR");
+      logVoiceClient("Voice token refresh failed", {
+        normalized,
+        error: summarizeUnknownError(error),
+        identity: this.currentIdentity,
+        deviceId: this.currentDeviceId,
+      });
       store.setVoiceRegistrationState("degraded");
       store.setVoiceError(normalized);
       await this.persistDeviceState({
@@ -871,6 +1085,13 @@ class TwilioVoiceService {
 
   private attachCallListeners(call: Call, direction: "inbound" | "outbound") {
     call.on(Call.Event.Ringing, () => {
+      logVoiceClient("Call event: ringing", {
+        direction,
+        callSid: call.getSid() ?? useCallStore.getState().callSid,
+        to: call.getTo() ?? null,
+        from: call.getFrom() ?? null,
+        state: call.getState(),
+      });
       this.syncCurrentCallControls(call);
       useCallStore.getState().setCallState("connecting");
       useCallStore.getState().setCallSession({
@@ -890,6 +1111,13 @@ class TwilioVoiceService {
     });
 
     call.on(Call.Event.Connected, () => {
+      logVoiceClient("Call event: connected", {
+        direction,
+        callSid: call.getSid() ?? useCallStore.getState().callSid,
+        to: call.getTo() ?? null,
+        from: call.getFrom() ?? null,
+        state: call.getState(),
+      });
       this.syncCurrentCallControls(call);
       const externalParticipantE164 =
         useCallStore.getState().externalParticipantE164 ??
@@ -915,6 +1143,15 @@ class TwilioVoiceService {
 
     call.on(Call.Event.ConnectFailure, (error) => {
       const normalized = normalizeTwilioError(error, "CALL_CONNECT_ERROR");
+      logVoiceClient("Call event: connect failure", {
+        direction,
+        callSid: call.getSid() ?? useCallStore.getState().callSid,
+        normalized,
+        error: summarizeUnknownError(error),
+        to: call.getTo() ?? null,
+        from: call.getFrom() ?? null,
+        state: call.getState(),
+      });
       useCallStore.getState().setVoiceError(normalized);
       useCallStore.getState().setCallState("failed");
       void postCallSessionEvent({
@@ -935,6 +1172,15 @@ class TwilioVoiceService {
 
     call.on(Call.Event.Disconnected, (error) => {
       const normalized = error ? normalizeTwilioError(error, "CALL_CONNECT_ERROR") : null;
+      logVoiceClient("Call event: disconnected", {
+        direction,
+        callSid: call.getSid() ?? useCallStore.getState().callSid,
+        normalized,
+        error: error ? summarizeUnknownError(error) : null,
+        to: call.getTo() ?? null,
+        from: call.getFrom() ?? null,
+        state: call.getState(),
+      });
       if (normalized) {
         useCallStore.getState().setVoiceError(normalized);
       }
@@ -1019,11 +1265,21 @@ class TwilioVoiceService {
   private async ensureAccessToken(): Promise<string> {
     const refreshAfter = useCallStore.getState().tokenRefreshAfter;
     if (!this.currentToken || (refreshAfter && new Date(refreshAfter).getTime() <= Date.now())) {
+      logVoiceClient("Access token missing or stale; refreshing", {
+        hasCurrentToken: Boolean(this.currentToken),
+        refreshAfter,
+      });
       await this.refreshRegistration();
     }
 
     if (!this.currentToken) {
       const tokenPayload = await fetchVoiceAccessToken();
+      logVoiceClient("Fetched voice access token outside registration flow", {
+        identity: tokenPayload.identity,
+        issuedAt: tokenPayload.issuedAt,
+        expiresAt: tokenPayload.expiresAt,
+        refreshAfter: tokenPayload.refreshAfter,
+      });
       this.currentToken = tokenPayload.token;
       this.currentIdentity = tokenPayload.identity;
       useCallStore.getState().setTokenLifecycle({

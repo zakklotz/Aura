@@ -55,10 +55,14 @@ export function DialerScreen() {
       setIsSubmitting(true);
       await twilioVoiceService.startOutgoingCall(number.trim());
     } catch (error) {
+      const latestVoiceError = useCallStore.getState();
       setCallErrorMessage(
-        error instanceof ApiError && error.status >= 400 && error.status < 500
-          ? "Aura couldn't start that call. Check the number and try again."
-          : "Aura couldn't start the call. Try again in a moment."
+        latestVoiceError.lastVoiceErrorMessage ??
+          (error instanceof ApiError && error.status >= 400 && error.status < 500
+            ? error.message
+            : error instanceof Error && error.message
+              ? error.message
+              : "Aura couldn't start the call. Try again in a moment.")
       );
     } finally {
       setIsSubmitting(false);

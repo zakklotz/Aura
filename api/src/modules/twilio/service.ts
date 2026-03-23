@@ -21,6 +21,10 @@ type ProviderEventInput = {
   transcriptionProviderId?: string | null;
 };
 
+function logVoiceStatus(message: string, details: Record<string, unknown>) {
+  console.info(`[twilio/voice/status] ${message}`, details);
+}
+
 export async function recordProviderEvent(input: ProviderEventInput) {
   return prisma.providerEvent.upsert({
     where: {
@@ -53,7 +57,7 @@ export async function recordProviderEvent(input: ProviderEventInput) {
 
 export function parseIdentity(identity: string | undefined): { businessId: string; userId: string } | null {
   if (!identity) return null;
-  const match = /^business_(.+)_user_(.+)$/.exec(identity.trim());
+  const match = /^business_(.+?)_user_(.+)$/.exec(identity.trim());
   if (!match) return null;
   return {
     businessId: match[1] ?? "",
@@ -403,6 +407,22 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
     throw new AppError(400, "bad_request", "Voice status payload is incomplete");
   }
 
+  logVoiceStatus("Normalized voice status payload", {
+    businessId,
+    phoneNumberId,
+    externalParticipantE164,
+    sessionCallSid,
+    callEventSid,
+    parentCallSid,
+    childCallSid,
+    providerStatus,
+    callbackSource,
+    direction,
+    eventType,
+    progressState,
+    rawCallSid,
+  });
+
   await recordProviderEvent({
     businessId,
     eventType: "voice.status",
@@ -443,9 +463,25 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
       state: fromDbState(session.state),
       externalParticipantE164,
     });
+    logVoiceStatus("Upserted call session from Twilio status", {
+      businessId,
+      nextState,
+      sessionCallSid: session.callSid,
+      parentCallSid,
+      childCallSid,
+      providerStatus,
+      eventType,
+    });
   }
 
   if (!eventType) {
+    logVoiceStatus("Ignoring non-terminal voice status for thread projection", {
+      businessId,
+      sessionCallSid,
+      providerStatus,
+      progressState,
+      callbackSource,
+    });
     return;
   }
 
@@ -519,6 +555,13 @@ export async function handleVoiceStatus(payload: Record<string, string | undefin
         : eventType === "CALL_DECLINED"
           ? "Call declined"
           : "Call completed",
+  });
+  logVoiceStatus("Projected terminal call outcome into thread history", {
+    businessId,
+    sessionCallSid,
+    callEventSid,
+    eventType,
+    providerStatus,
   });
 }
 

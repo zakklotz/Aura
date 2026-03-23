@@ -3,7 +3,8 @@ import { z } from "zod";
 import { NormalizedErrorCode } from "@prisma/client";
 import { requireBusiness, requireUser } from "../../middleware/auth.js";
 import { sendAppError, AppError } from "../../lib/errors.js";
-import { createVoiceAccessToken, ensureTwilioVoiceConfigured } from "../../lib/twilio.js";
+import { createVoiceAccessToken, ensureTwilioVoiceConfigured, summarizeVoiceAccessToken } from "../../lib/twilio.js";
+import { env } from "../../lib/env.js";
 import { normalizeToE164 } from "../../lib/phone.js";
 import { getPrimaryPhoneNumberForBusiness } from "../phoneNumbers/service.js";
 import { emitToBusiness } from "../../lib/socket.js";
@@ -14,6 +15,16 @@ export const callsRouter = Router();
 const VOICE_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const VOICE_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 5 * 60;
 
+function summarizeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    };
+  }
+  return { message: String(error) };
+}
+
 callsRouter.get("/access-token", requireUser, requireBusiness, async (req, res) => {
   try {
     const viewer = req.viewer!;
@@ -23,6 +34,22 @@ callsRouter.get("/access-token", requireUser, requireBusiness, async (req, res) 
     const expiresAt = new Date(issuedAt.getTime() + VOICE_ACCESS_TOKEN_TTL_SECONDS * 1000);
     const refreshAfter = new Date(expiresAt.getTime() - VOICE_ACCESS_TOKEN_REFRESH_SKEW_SECONDS * 1000);
     const token = createVoiceAccessToken(identity);
+    const tokenClaims = summarizeVoiceAccessToken(token);
+    console.info("[voice/access-token] Minted access token", {
+      businessId: viewer.businessId,
+      userId: viewer.userId,
+      identity,
+      hasStableIdentity: Boolean(viewer.businessId && viewer.userId && identity),
+      configuredTwimlAppSid: env.twilioTwimlAppSid || null,
+      tokenClaims,
+      outgoingApplicationSidMatchesConfig: tokenClaims?.outgoingApplicationSid === (env.twilioTwimlAppSid || null),
+      viewerVoiceRegistrationState: viewer.voiceRegistrationState,
+      ttlSeconds: VOICE_ACCESS_TOKEN_TTL_SECONDS,
+      refreshSkewSeconds: VOICE_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      refreshAfter: refreshAfter.toISOString(),
+    });
     res.json({
       token,
       identity,
@@ -38,6 +65,11 @@ callsRouter.get("/access-token", requireUser, requireBusiness, async (req, res) 
         ? new AppError(503, "VOICE_TOKEN_ERROR", error.message)
         : error
     );
+    console.error("[voice/access-token] Failed to mint access token", {
+      viewerBusinessId: req.viewer?.businessId ?? null,
+      viewerUserId: req.viewer?.userId ?? null,
+      error: summarizeError(error),
+    });
   }
 });
 
@@ -50,6 +82,13 @@ callsRouter.post("/outbound", requireUser, requireBusiness, async (req, res) => 
   try {
     const viewer = req.viewer!;
     const input = outboundSchema.parse(req.body);
+    console.info("[voice/outbound] Received outbound session request", {
+      businessId: viewer.businessId,
+      userId: viewer.userId,
+      requestedTo: input.to,
+      requestedPhoneNumberId: input.phoneNumberId ?? null,
+      deviceId: viewer.currentDeviceId ?? null,
+    });
     const phoneNumber =
       input.phoneNumberId != null ? { id: input.phoneNumberId } : await getPrimaryPhoneNumberForBusiness(viewer.businessId!);
     if (!phoneNumber) {
@@ -74,6 +113,13 @@ callsRouter.post("/outbound", requireUser, requireBusiness, async (req, res) => 
       state: fromDbState(session.state),
       externalParticipantE164,
     });
+    console.info("[voice/outbound] Created outbound session", {
+      sessionId: session.id,
+      businessId: viewer.businessId,
+      phoneNumberId: phoneNumber.id,
+      externalParticipantE164,
+      deviceId: viewer.currentDeviceId ?? null,
+    });
     res.status(202).json({
       ok: true,
       sessionId: session.id,
@@ -81,6 +127,12 @@ callsRouter.post("/outbound", requireUser, requireBusiness, async (req, res) => 
       phoneNumberId: phoneNumber.id,
     });
   } catch (error) {
+    console.error("[voice/outbound] Failed to create outbound session", {
+      viewerBusinessId: req.viewer?.businessId ?? null,
+      viewerUserId: req.viewer?.userId ?? null,
+      body: req.body,
+      error: summarizeError(error),
+    });
     sendAppError(res, error);
   }
 });

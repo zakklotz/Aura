@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOutboundVoiceResponse, normalizeVoiceStatusPayload } from "../src/modules/twilio/service.js";
+import { buildOutboundVoiceResponse, normalizeVoiceStatusPayload, parseIdentity } from "../src/modules/twilio/service.js";
 
 describe("twilio voice helpers", () => {
   it("adds child-leg progress callbacks to outbound TwiML", () => {
@@ -58,5 +58,12 @@ describe("twilio voice helpers", () => {
     expect(normalized.childCallSid).toBe("CAchild");
     expect(normalized.eventType).toBe("CALL_COMPLETED");
     expect(normalized.direction).toBe("outbound");
+  });
+
+  it("parses identities when the user id itself contains `_user_`", () => {
+    expect(parseIdentity("business_cmmzsvm1m0000cg2b87vcjhd7_user_user_3BDJtUYQwKwZDUNEH8RMMAcy1B5")).toEqual({
+      businessId: "cmmzsvm1m0000cg2b87vcjhd7",
+      userId: "user_3BDJtUYQwKwZDUNEH8RMMAcy1B5",
+    });
   });
 });

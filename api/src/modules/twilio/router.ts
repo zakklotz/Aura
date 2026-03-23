@@ -1,4 +1,5 @@
-import { Router, type Request } from "express";
+import { randomUUID } from "node:crypto";
+import { Router, type Request, type Response } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { sendAppError, AppError } from "../../lib/errors.js";
 import { validateTwilioSignature } from "../../lib/twilio.js";
@@ -23,8 +24,46 @@ import { fromDbState, upsertCallSessionTransition } from "../calls/sessionServic
 
 export const twilioRouter = Router();
 
+function summarizeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    };
+  }
+  return { message: String(error) };
+}
+
+function summarizeTwilioPayload(payload: Record<string, string | undefined>) {
+  return {
+    AccountSid: payload.AccountSid ?? null,
+    ApiVersion: payload.ApiVersion ?? null,
+    From: payload.From ?? null,
+    To: payload.To ?? null,
+    Identity: payload.Identity ?? null,
+    CallSid: payload.CallSid ?? payload.callSid ?? null,
+    DialCallSid: payload.DialCallSid ?? null,
+    ParentCallSid: payload.ParentCallSid ?? null,
+    CallStatus: payload.CallStatus ?? null,
+    DialCallStatus: payload.DialCallStatus ?? null,
+    Direction: payload.Direction ?? null,
+    CallbackSource: payload.CallbackSource ?? null,
+    SequenceNumber: payload.SequenceNumber ?? null,
+    businessId: payload.businessId ?? payload.BusinessId ?? null,
+    phoneNumberId: payload.phoneNumberId ?? payload.PhoneNumberId ?? null,
+    externalParticipantE164: payload.externalParticipantE164 ?? payload.ExternalParticipantE164 ?? null,
+  };
+}
+
 function firstHeaderValue(value: string | undefined): string | undefined {
   return value?.split(",")[0]?.trim() || undefined;
+}
+
+function getTwilioRequestId(res: Response): string {
+  if (typeof res.locals.twilioRequestId !== "string") {
+    res.locals.twilioRequestId = randomUUID();
+  }
+  return res.locals.twilioRequestId;
 }
 
 function getTwilioValidationUrls(req: Request): string[] {
@@ -44,19 +83,57 @@ function getTwilioValidationUrls(req: Request): string[] {
   return [...urls];
 }
 
-twilioRouter.use((req, _res, next) => {
+twilioRouter.use((req, res, next) => {
+  const requestId = getTwilioRequestId(res);
   const signature = req.header("x-twilio-signature") ?? undefined;
   const payload = req.method === "GET" ? (req.query as Record<string, string | undefined>) : (req.body as Record<string, string | undefined>);
+  const validationUrls = getTwilioValidationUrls(req);
+  const matchedValidationUrl =
+    process.env.NODE_ENV === "test" || !env.twilioWebhookAuthToken
+      ? null
+      : (validationUrls.find((url) => validateTwilioSignature(url, signature, payload)) ?? null);
+
+  if (req.path.startsWith("/voice")) {
+    console.info("[twilio/webhook] Received voice webhook", {
+      requestId,
+      path: req.path,
+      method: req.method,
+      hasSignature: Boolean(signature),
+      host: req.get("host") ?? null,
+      forwardedHost: firstHeaderValue(req.header("x-forwarded-host")) ?? null,
+      forwardedProto: firstHeaderValue(req.header("x-forwarded-proto")) ?? null,
+      candidateValidationUrls: validationUrls,
+      payload: summarizeTwilioPayload(payload),
+    });
+  }
 
   if (process.env.NODE_ENV === "test" || !env.twilioWebhookAuthToken) {
     next();
     return;
   }
 
-  const isValid = getTwilioValidationUrls(req).some((url) => validateTwilioSignature(url, signature, payload));
-  if (!isValid) {
+  if (!matchedValidationUrl) {
+    if (req.path.startsWith("/voice")) {
+      console.warn("[twilio/webhook] Signature validation failed", {
+        requestId,
+        path: req.path,
+        method: req.method,
+        hasSignature: Boolean(signature),
+        candidateValidationUrls: validationUrls,
+        payload: summarizeTwilioPayload(payload),
+      });
+    }
     next(new AppError(403, "forbidden", "Twilio signature validation failed"));
     return;
+  }
+
+  if (req.path.startsWith("/voice")) {
+    console.info("[twilio/webhook] Signature validation passed", {
+      requestId,
+      path: req.path,
+      matchedValidationUrl,
+      candidateValidationUrls: validationUrls,
+    });
   }
 
   next();
@@ -124,10 +201,17 @@ twilioRouter.post("/voice/incoming", async (req, res) => {
 });
 
 twilioRouter.post("/voice/outbound", async (req, res) => {
+  const requestId = getTwilioRequestId(res);
   try {
     const payload = req.body as Record<string, string | undefined>;
     const to = optionalE164(payload.To);
     const identity = parseIdentity(payload.From?.replace(/^client:/i, "") ?? payload.Identity);
+    console.info("[twilio/voice/outbound] Processing outbound TwiML request", {
+      requestId,
+      payload: summarizeTwilioPayload(payload),
+      normalizedTo: to,
+      parsedIdentity: identity,
+    });
     if (!to || !identity) {
       throw new AppError(400, "bad_request", "Outbound voice payload is incomplete");
     }
@@ -144,18 +228,35 @@ twilioRouter.post("/voice/outbound", async (req, res) => {
       phoneNumberId: phoneNumber.id,
       externalParticipantE164: to,
     });
+    console.info("[twilio/voice/outbound] Returning outbound TwiML", {
+      requestId,
+      businessId: identity.businessId,
+      destination: to,
+      callerId: phoneNumber.e164,
+      xml: response.toString(),
+    });
     res.type("text/xml").send(response.toString());
   } catch (error) {
+    console.error("[twilio/voice/outbound] Failed to build outbound TwiML", {
+      requestId,
+      payload: summarizeTwilioPayload(req.body as Record<string, string | undefined>),
+      error: summarizeError(error),
+    });
     sendAppError(res, error);
   }
 });
 
 twilioRouter.post("/voice/status", async (req, res) => {
+  const requestId = getTwilioRequestId(res);
   try {
     const payload = {
       ...(req.query as Record<string, string | undefined>),
       ...(req.body as Record<string, string | undefined>),
     };
+    console.info("[twilio/voice/status] Processing voice status webhook", {
+      requestId,
+      payload: summarizeTwilioPayload(payload),
+    });
 
     if (payload.DialCallStatus && payload.DialCallStatus !== "completed" && payload.businessId && payload.phoneNumberId && payload.externalParticipantE164) {
       await handleVoiceStatus(payload);
@@ -165,6 +266,11 @@ twilioRouter.post("/voice/status", async (req, res) => {
         externalParticipantE164: payload.externalParticipantE164,
         callSid: payload.CallSid,
       });
+      console.info("[twilio/voice/status] Returning voicemail fallback TwiML", {
+        requestId,
+        payload: summarizeTwilioPayload(payload),
+        xml: response.toString(),
+      });
       res.type("text/xml").send(response.toString());
       return;
     }
@@ -172,6 +278,14 @@ twilioRouter.post("/voice/status", async (req, res) => {
     await handleVoiceStatus(payload);
     res.type("text/xml").send("<Response></Response>");
   } catch (error) {
+    console.error("[twilio/voice/status] Failed to process voice status webhook", {
+      requestId,
+      payload: summarizeTwilioPayload({
+        ...(req.query as Record<string, string | undefined>),
+        ...(req.body as Record<string, string | undefined>),
+      }),
+      error: summarizeError(error),
+    });
     sendAppError(res, error);
   }
 });
