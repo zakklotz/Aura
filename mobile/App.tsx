@@ -72,37 +72,41 @@ function MissingConfig() {
 
 function AppShell() {
   const auth = useAuth();
+  const isSignedIn = Boolean(auth.isSignedIn);
+  const apiTokenGetter = React.useCallback(async () => {
+    if (!auth.isLoaded || !auth.isSignedIn) {
+      return null;
+    }
+
+    return (await auth.getToken()) ?? null;
+  }, [auth.getToken, auth.isLoaded, auth.isSignedIn]);
+
+  setApiTokenGetter(apiTokenGetter);
 
   React.useEffect(() => {
-    setApiTokenGetter(async () => {
-      if (!auth.isLoaded || !auth.isSignedIn) {
-        return null;
-      }
-
-      return (await auth.getToken()) ?? null;
-    });
-
     return () => {
       setApiTokenGetter(null);
     };
-  }, [auth.getToken, auth.isLoaded, auth.isSignedIn]);
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
         <NavigationContainer ref={navigationRef}>
           <StatusBar style="dark" />
-          <CommunicationCacheBootstrap
-            queryClient={queryClient}
-            isSignedIn={Boolean(auth.isSignedIn)}
-            userId={auth.userId}
-          />
-          <AppStateRefetcher queryClient={queryClient} />
-          <SocketBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
-          <VoiceBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
-          <HistorySyncBootstrap queryClient={queryClient} isSignedIn={Boolean(auth.isSignedIn)} />
-          <CallNavigationController />
-          <AppNavigator isSignedIn={Boolean(auth.isSignedIn)} />
+          {isSignedIn ? (
+            <>
+              <VoiceBootstrap queryClient={queryClient} isSignedIn={isSignedIn} />
+              <CommunicationCacheBootstrap queryClient={queryClient} isSignedIn={isSignedIn} userId={auth.userId} />
+              <AppStateRefetcher queryClient={queryClient} />
+              <SocketBootstrap queryClient={queryClient} isSignedIn={isSignedIn} />
+              <HistorySyncBootstrap queryClient={queryClient} isSignedIn={isSignedIn} />
+              <CallNavigationController />
+              <AppNavigator isSignedIn={isSignedIn} />
+            </>
+          ) : (
+            <AppNavigator isSignedIn={isSignedIn} />
+          )}
         </NavigationContainer>
       </SafeAreaProvider>
     </QueryClientProvider>

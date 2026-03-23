@@ -1,7 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { fetchBootstrap, type ThreadPayload, type ThreadsPayload } from "../services/api/softphoneApi";
+import {
+  fetchBootstrap,
+  fetchMailbox,
+  fetchRecentCalls,
+  fetchThreads,
+  type ThreadPayload,
+  type ThreadsPayload,
+} from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import {
   type CachedViewer,
@@ -33,6 +40,7 @@ export function CommunicationCacheBootstrap({
   const cachedViewerRef = useRef<CachedViewer | null>(null);
   const currentViewerRef = useRef<CachedViewer | null>(null);
   const persistedDataRef = useRef(new Map<string, number>());
+  const prefetchedViewerKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isSignedIn || !userId) {
@@ -40,6 +48,7 @@ export function CommunicationCacheBootstrap({
       cachedViewerRef.current = null;
       currentViewerRef.current = null;
       persistedDataRef.current.clear();
+      prefetchedViewerKeyRef.current = null;
       queryClient.removeQueries({ queryKey: queryKeys.threads });
       void removeAllThreadQueries(queryClient);
       return;
@@ -70,6 +79,39 @@ export function CommunicationCacheBootstrap({
       }
     });
   }, [isSignedIn, queryClient, userId]);
+
+  useEffect(() => {
+    const businessId = bootstrap.data?.business?.id ?? null;
+    const viewerKey = userId && businessId ? `${userId}:${businessId}` : null;
+
+    if (!isSignedIn || !viewerKey) {
+      return;
+    }
+
+    if (prefetchedViewerKeyRef.current === viewerKey) {
+      return;
+    }
+
+    prefetchedViewerKeyRef.current = viewerKey;
+
+    void Promise.allSettled([
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.threads,
+        queryFn: fetchThreads,
+        staleTime: 0,
+      }),
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.mailbox,
+        queryFn: fetchMailbox,
+        staleTime: 0,
+      }),
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.recentCalls,
+        queryFn: fetchRecentCalls,
+        staleTime: 0,
+      }),
+    ]);
+  }, [bootstrap.data?.business?.id, isSignedIn, queryClient, userId]);
 
   useEffect(() => {
     if (!bootstrap.data?.user.id) {

@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import type { QueryClient } from "@tanstack/react-query";
-import { Call, CallInvite, CallKit, Voice } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, CallInvite, CallKit, Voice } from "@twilio/voice-react-native-sdk";
 import {
   createOutboundSession,
   fetchCallSession,
@@ -103,6 +103,7 @@ class TwilioVoiceService {
   private currentPrimaryPhoneNumberId: string | null = null;
   private currentInvite: CallInvite | null = null;
   private currentCall: Call | null = null;
+  private preferredNonSpeakerAudioDeviceUuid: string | null = null;
   private listenersBound = false;
 
   async bootstrap(context: BootstrapContext) {
@@ -136,6 +137,48 @@ class TwilioVoiceService {
     await this.recoverWithTimeout();
   }
 
+  async setMuted(muted: boolean) {
+    if (!this.currentCall) {
+      return false;
+    }
+
+    const isMuted = await this.currentCall.mute(muted);
+    useCallStore.getState().setMuted(isMuted);
+    return isMuted;
+  }
+
+  async setSpeakerEnabled(enabled: boolean) {
+    const { audioDevices, selectedDevice } = await this.getVoice().getAudioDevices();
+
+    if (selectedDevice && selectedDevice.type !== AudioDevice.Type.Speaker) {
+      this.preferredNonSpeakerAudioDeviceUuid = selectedDevice.uuid;
+    }
+
+    if (enabled) {
+      const speakerDevice = audioDevices.find((device) => device.type === AudioDevice.Type.Speaker);
+      if (!speakerDevice) {
+        return false;
+      }
+
+      await speakerDevice.select();
+      this.applySelectedAudioDevice(speakerDevice);
+      return true;
+    }
+
+    const fallbackDevice =
+      (this.preferredNonSpeakerAudioDeviceUuid
+        ? audioDevices.find((device) => device.uuid === this.preferredNonSpeakerAudioDeviceUuid)
+        : null) ?? audioDevices.find((device) => device.type !== AudioDevice.Type.Speaker);
+
+    if (!fallbackDevice) {
+      return false;
+    }
+
+    await fallbackDevice.select();
+    this.applySelectedAudioDevice(fallbackDevice);
+    return fallbackDevice.type !== AudioDevice.Type.Speaker;
+  }
+
   async startOutgoingCall(to: string) {
     const businessId = this.currentBusinessId;
     const phoneNumberId = this.currentPrimaryPhoneNumberId;
@@ -147,6 +190,7 @@ class TwilioVoiceService {
 
     const occurredAt = new Date().toISOString();
     const outbound = await createOutboundSession({ to, phoneNumberId });
+    this.resetCallControls();
     useCallStore.getState().setCallSession({
       direction: "outbound",
       phoneNumberId: outbound.phoneNumberId,
@@ -173,6 +217,7 @@ class TwilioVoiceService {
       });
       this.currentCall = call;
       this.attachCallListeners(call, "outbound");
+      this.syncCurrentCallControls(call);
       useCallStore.getState().setCallSession({
         callSid: call.getSid() ?? null,
         direction: "outbound",
@@ -215,6 +260,7 @@ class TwilioVoiceService {
     const invite = this.currentInvite;
     const callSid = invite.getCallSid();
     const externalParticipantE164 = invite.getFrom();
+    this.resetCallControls();
     useCallStore.getState().setCallState("answering");
     await postCallSessionEvent({
       state: "answering",
@@ -230,6 +276,7 @@ class TwilioVoiceService {
     useCallStore.getState().setPendingInviteUuid(null);
     this.currentCall = call;
     this.attachCallListeners(call, "inbound");
+    this.syncCurrentCallControls(call);
     useCallStore.getState().setCallSession({
       callSid: call.getSid() ?? callSid ?? null,
       direction: "inbound",
@@ -259,6 +306,7 @@ class TwilioVoiceService {
     await invite.reject();
     this.currentInvite = null;
     useCallStore.getState().setPendingInviteUuid(null);
+    this.resetCallControls();
     useCallStore.getState().setCallState("ended");
     await postCallSessionEvent({
       state: "ended",
@@ -282,6 +330,7 @@ class TwilioVoiceService {
     const externalParticipantE164 = useCallStore.getState().externalParticipantE164;
     await call.disconnect();
     this.currentCall = null;
+    this.resetCallControls();
     useCallStore.getState().setCallState("ended");
     await postCallSessionEvent({
       state: "ended",
@@ -295,27 +344,46 @@ class TwilioVoiceService {
     this.invalidateCallSession();
   }
 
+  private syncCurrentCallControls(call: Call | null) {
+    useCallStore.getState().setMuted(Boolean(call?.isMuted() ?? false));
+    void this.syncSelectedAudioDevice();
+  }
+
+  private async syncSelectedAudioDevice() {
+    try {
+      const { selectedDevice } = await this.getVoice().getAudioDevices();
+      this.applySelectedAudioDevice(selectedDevice);
+    } catch {
+      // Audio route discovery is best-effort and should not interrupt call setup.
+    }
+  }
+
+  private applySelectedAudioDevice(selectedDevice?: AudioDevice) {
+    if (selectedDevice && selectedDevice.type !== AudioDevice.Type.Speaker) {
+      this.preferredNonSpeakerAudioDeviceUuid = selectedDevice.uuid;
+    }
+
+    useCallStore.getState().setSpeakerOn(selectedDevice?.type === AudioDevice.Type.Speaker);
+  }
+
+  private resetCallControls() {
+    this.preferredNonSpeakerAudioDeviceUuid = null;
+    useCallStore.getState().setMuted(false);
+    useCallStore.getState().setSpeakerOn(false);
+  }
+
   private async bootstrapInternal(context: BootstrapContext) {
     const bootstrap = context.bootstrap!;
     const store = useCallStore.getState();
     const previousBusinessId = this.currentBusinessId;
     const previousDeviceId = this.currentDeviceId;
-    store.setDeviceId(bootstrap.device.deviceId ?? null);
-    store.setVoiceRegistrationState(toLocalVoiceRegistrationState(bootstrap.device.voiceRegistrationState));
-    store.setVoiceError({
-      code: bootstrap.device.lastRegistrationErrorCode ?? null,
-      message: bootstrap.device.lastRegistrationErrorMessage ?? null,
-    });
-
-    this.currentBusinessId = bootstrap.business?.id ?? null;
-    this.currentPrimaryPhoneNumberId = bootstrap.primaryPhoneNumber?.id ?? null;
-    this.currentIdentity =
+    const nextBusinessId = bootstrap.business?.id ?? null;
+    const nextPrimaryPhoneNumberId = bootstrap.primaryPhoneNumber?.id ?? null;
+    const nextIdentity =
       bootstrap.device.twilioIdentity ??
       (bootstrap.business ? `business_${bootstrap.business.id}_user_${bootstrap.user.id}` : null);
-    this.currentDeviceId = bootstrap.device.deviceId ?? (await getOrCreateDeviceId());
-
-    await this.ensureNativeSetup();
-    await this.recoverWithTimeout();
+    const nextDeviceId = bootstrap.device.deviceId ?? (await getOrCreateDeviceId());
+    const bootstrapVoiceRegistrationState = toLocalVoiceRegistrationState(bootstrap.device.voiceRegistrationState);
 
     const refreshAfter = store.tokenRefreshAfter;
     const tokenExpiresAt = store.tokenExpiresAt;
@@ -324,9 +392,35 @@ class TwilioVoiceService {
         ((refreshAfter && new Date(refreshAfter).getTime() > Date.now()) ||
           (tokenExpiresAt && new Date(tokenExpiresAt).getTime() > Date.now()))
     );
-    const sameVoiceContext =
-      previousBusinessId === this.currentBusinessId && previousDeviceId === this.currentDeviceId;
-    if (sameVoiceContext && tokenStillFresh && store.voiceRegistrationState === "ready") {
+    const sameVoiceContext = previousBusinessId === nextBusinessId && previousDeviceId === nextDeviceId;
+    const shouldPreserveLocalReadyState = sameVoiceContext && store.voiceRegistrationState === "ready";
+
+    store.setDeviceId(nextDeviceId);
+
+    if (!shouldPreserveLocalReadyState) {
+      store.setVoiceRegistrationState(bootstrapVoiceRegistrationState);
+      store.setVoiceError({
+        code: bootstrap.device.lastRegistrationErrorCode ?? null,
+        message: bootstrap.device.lastRegistrationErrorMessage ?? null,
+      });
+    }
+
+    this.currentBusinessId = nextBusinessId;
+    this.currentPrimaryPhoneNumberId = nextPrimaryPhoneNumberId;
+    this.currentIdentity = nextIdentity;
+    this.currentDeviceId = nextDeviceId;
+
+    await this.ensureNativeSetup();
+    await this.recoverWithTimeout();
+
+    if (shouldPreserveLocalReadyState) {
+      if (!tokenStillFresh) {
+        await this.refreshRegistration();
+      }
+      return;
+    }
+
+    if (sameVoiceContext && tokenStillFresh && bootstrapVoiceRegistrationState === "ready") {
       return;
     }
 
@@ -357,6 +451,9 @@ class TwilioVoiceService {
         if (!ACTIVE_CALL_STATES.has(useCallStore.getState().callState)) {
           useCallStore.getState().setCallState("idle");
         }
+      });
+      voice.on(Voice.Event.AudioDevicesUpdated, (_audioDevices, selectedDevice) => {
+        this.applySelectedAudioDevice(selectedDevice);
       });
       voice.on(Voice.Event.Error, (error) => {
         const normalized = normalizeTwilioError(error, "VOICE_REGISTRATION_ERROR");
@@ -630,6 +727,7 @@ class TwilioVoiceService {
     if (liveCall) {
       this.currentCall = liveCall;
       this.attachCallListeners(liveCall, useCallStore.getState().direction ?? "outbound");
+      this.syncCurrentCallControls(liveCall);
       const sdkState = mapRecoveredCallState(liveCall);
       const callSid = liveCall.getSid() ?? serverSession?.session.callSid ?? null;
       const externalParticipantE164 = serverSession?.session.externalParticipantE164 ?? liveCall.getTo() ?? liveCall.getFrom() ?? null;
@@ -701,6 +799,7 @@ class TwilioVoiceService {
       useCallStore.getState().setPendingInviteUuid(null);
       this.currentCall = call;
       this.attachCallListeners(call, "inbound");
+      this.syncCurrentCallControls(call);
       useCallStore.getState().setCallSession({
         callSid: call.getSid() ?? callSid ?? null,
         direction: "inbound",
@@ -721,6 +820,7 @@ class TwilioVoiceService {
     callInvite.on(CallInvite.Event.Rejected, () => {
       this.currentInvite = null;
       useCallStore.getState().setPendingInviteUuid(null);
+      this.resetCallControls();
       useCallStore.getState().setCallState("ended");
       void postCallSessionEvent({
         state: "ended",
@@ -736,6 +836,7 @@ class TwilioVoiceService {
     callInvite.on(CallInvite.Event.Cancelled, (error) => {
       this.currentInvite = null;
       useCallStore.getState().setPendingInviteUuid(null);
+      this.resetCallControls();
       const normalized = normalizeTwilioError(error, "CALL_CONNECT_ERROR");
       useCallStore.getState().setVoiceError(normalized);
       useCallStore.getState().setCallState("failed");
@@ -770,6 +871,7 @@ class TwilioVoiceService {
 
   private attachCallListeners(call: Call, direction: "inbound" | "outbound") {
     call.on(Call.Event.Ringing, () => {
+      this.syncCurrentCallControls(call);
       useCallStore.getState().setCallState("connecting");
       useCallStore.getState().setCallSession({
         callSid: call.getSid() ?? useCallStore.getState().callSid,
@@ -788,6 +890,7 @@ class TwilioVoiceService {
     });
 
     call.on(Call.Event.Connected, () => {
+      this.syncCurrentCallControls(call);
       const externalParticipantE164 =
         useCallStore.getState().externalParticipantE164 ??
         (direction === "outbound" ? call.getTo() : call.getFrom()) ??
@@ -825,6 +928,7 @@ class TwilioVoiceService {
         errorMessage: normalized.message,
       });
       this.currentCall = null;
+      this.resetCallControls();
       this.scheduleReadySettle();
       this.invalidateCallSession();
     });
@@ -846,6 +950,7 @@ class TwilioVoiceService {
         errorMessage: normalized?.message ?? null,
       });
       this.currentCall = null;
+      this.resetCallControls();
       this.scheduleReadySettle();
       this.invalidateCallSession();
     });
@@ -857,6 +962,7 @@ class TwilioVoiceService {
       if (ACTIVE_CALL_STATES.has(store.callState)) {
         return;
       }
+      this.resetCallControls();
       store.setCallSession({
         callSid: null,
         direction: null,

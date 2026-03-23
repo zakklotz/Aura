@@ -15,9 +15,9 @@ import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchBootstrap,
   fetchMailbox,
   fetchRecentCalls,
-  fetchSettings,
 } from "../services/api/softphoneApi";
 import { queryKeys } from "../store/queryKeys";
 import { useCallStore } from "../store/callStore";
@@ -33,19 +33,16 @@ const heroImage = require("../../assets/adaptive-icon-preview.png");
 export function DialerScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { voiceRegistrationState, externalParticipantE164 } = useCallStore();
+  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: fetchBootstrap });
   const mailbox = useQuery({ queryKey: queryKeys.mailbox, queryFn: fetchMailbox });
   const recentCalls = useQuery({ queryKey: queryKeys.recentCalls, queryFn: fetchRecentCalls });
-  const settings = useQuery({ queryKey: queryKeys.settings, queryFn: fetchSettings });
   const [number, setNumber] = useState(externalParticipantE164 ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [callErrorMessage, setCallErrorMessage] = useState<string | null>(null);
 
   const unheardCount = (mailbox.data?.items ?? []).filter((item) => item.unheard).length;
-  const isReady =
-    !settings.isLoading &&
-    voiceRegistrationState === "ready" &&
-    settings.data?.featureReadiness.hasPrimaryPhoneNumber === true &&
-    settings.data?.featureReadiness.voiceConfigured === true;
+  const hasPhoneContext = Boolean(bootstrap.data?.business?.id) && Boolean(bootstrap.data?.primaryPhoneNumber?.id);
+  const isReady = voiceRegistrationState === "ready" && hasPhoneContext;
   const isCallUnavailable = !isReady;
 
   async function handleCall() {
@@ -76,9 +73,9 @@ export function DialerScreen() {
       keyExtractor={(item) => item.id}
       refreshControl={
         <RefreshControl
-          refreshing={recentCalls.isRefetching || mailbox.isRefetching || settings.isRefetching}
+          refreshing={bootstrap.isRefetching || recentCalls.isRefetching || mailbox.isRefetching}
           onRefresh={() => {
-            void Promise.all([recentCalls.refetch(), mailbox.refetch(), settings.refetch()]);
+            void Promise.all([bootstrap.refetch(), recentCalls.refetch(), mailbox.refetch()]);
           }}
           tintColor={colors.primary}
         />

@@ -17,6 +17,8 @@ export type VoiceRegistrationState = "ready" | "degraded" | "registering";
 type CallStore = {
   callState: CallState;
   voiceRegistrationState: VoiceRegistrationState;
+  isMuted: boolean;
+  isSpeakerOn: boolean;
   activeThreadId: string | null;
   deviceId: string | null;
   callSid: string | null;
@@ -32,6 +34,8 @@ type CallStore = {
   isRecoveringFromLaunch: boolean;
   setCallState: (callState: CallState) => void;
   setVoiceRegistrationState: (voiceRegistrationState: VoiceRegistrationState) => void;
+  setMuted: (isMuted: boolean) => void;
+  setSpeakerOn: (isSpeakerOn: boolean) => void;
   setActiveThreadId: (activeThreadId: string | null) => void;
   setDeviceId: (deviceId: string | null) => void;
   setCallSession: (input: {
@@ -50,6 +54,8 @@ type CallStore = {
 export const useCallStore = create<CallStore>((set) => ({
   callState: "idle",
   voiceRegistrationState: "registering",
+  isMuted: false,
+  isSpeakerOn: false,
   activeThreadId: null,
   deviceId: null,
   callSid: null,
@@ -65,6 +71,8 @@ export const useCallStore = create<CallStore>((set) => ({
   isRecoveringFromLaunch: false,
   setCallState: (callState) => set({ callState }),
   setVoiceRegistrationState: (voiceRegistrationState) => set({ voiceRegistrationState }),
+  setMuted: (isMuted) => set({ isMuted }),
+  setSpeakerOn: (isSpeakerOn) => set({ isSpeakerOn }),
   setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
   setDeviceId: (deviceId) => set({ deviceId }),
   setCallSession: (input) =>
@@ -92,6 +100,8 @@ export const useCallStore = create<CallStore>((set) => ({
     set({
       callState: "idle",
       voiceRegistrationState: "registering",
+      isMuted: false,
+      isSpeakerOn: false,
       callSid: null,
       direction: null,
       phoneNumberId: null,
